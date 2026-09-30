@@ -1,0 +1,9 @@
+build/
+sailbandwidth
+CMakeFiles
+CMakeCache.txt
+Makefile
+cmake_install.cmake
+
+# Data-verification dumps, written to the working directory on a verification failure.
+sailbw_dump_*.txt
