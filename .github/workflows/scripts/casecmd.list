@@ -1,0 +1,23 @@
+# sailbandwidth PR unit-test commands
+# Each non-empty, non-comment line is executed as a shell command.
+# Commands mirror run_sailbandwidth_test.sh (single-iteration smoke tests).
+# The binary is produced by build.sh into ./build/sailbandwidth.
+
+./build/sailbandwidth -t device_to_device_memcpy_read_ce -i 1
+./build/sailbandwidth -t device_to_device_memcpy_write_ce -i 1
+./build/sailbandwidth -t device_to_device_bidirectional_memcpy_read_ce -i 1
+./build/sailbandwidth -t device_to_device_bidirectional_memcpy_write_ce -i 1
+./build/sailbandwidth -t device_to_device_memcpy_read_sm -i 1
+./build/sailbandwidth -t device_to_device_latency_sm -i 1
+./build/sailbandwidth -t device_to_device_memcpy_write_sm -i 1
+./build/sailbandwidth -t device_to_device_bidirectional_memcpy_read_sm -i 1
+./build/sailbandwidth -t device_to_device_bidirectional_memcpy_write_sm -i 1
+./build/sailbandwidth -t device_to_host_bidirectional_memcpy_sm -i 1
+./build/sailbandwidth -t host_to_device_bidirectional_memcpy_sm -i 1
+./build/sailbandwidth -t all_to_host_bidirectional_memcpy_sm -i 1
+./build/sailbandwidth -t host_to_all_bidirectional_memcpy_sm -i 1
+./build/sailbandwidth -t host_to_device_memcpy_ce -i 1
+./build/sailbandwidth -t device_to_host_memcpy_ce -i 1
+./build/sailbandwidth -t host_to_device_memcpy_sm -i 1
+./build/sailbandwidth -t device_to_host_memcpy_sm -i 1
+./build/sailbandwidth -t host_device_latency_sm -i 1
