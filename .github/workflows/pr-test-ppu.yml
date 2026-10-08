@@ -4,10 +4,10 @@ name: sailbandwidth checkin
 on:
   workflow_dispatch:                                       # manual trigger (web/API)
   pull_request:
-    branches: [main, 'feature/add_ci_workflow']            # default branch is main; keep CI branch during bring-up
+    branches: [btv_comm_2v2_release, 'feature/add_ci_workflow']   # release branch; keep CI branch during bring-up
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [main, 'feature/add_ci_workflow']            # run again after merge
+    branches: [btv_comm_2v2_release, 'feature/add_ci_workflow']   # run again after merge
 
 permissions:
   contents: read
