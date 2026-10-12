@@ -1,0 +1,34 @@
+name: Pull Request Check
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  pull-request-check:
+    name: Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install checker dependencies
+        run: python3 -m pip install --disable-pip-version-check -r .github/workflows/scripts/requirements-checks.txt
+      - name: Run checker regression tests
+        run: python3 -B -m unittest discover -s .github/workflows/scripts -p 'test_check_in.py' -v
+      # The checker runs from the pull request working tree. Whether a pull
+      # request may modify a workflow or checker is a maintainer review decision,
+      # not a process-enforced gate.
+      - name: Check pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SAILBANDWIDTH_REPO_ROOT: ${{ github.workspace }}
+        run: PYTHONDONTWRITEBYTECODE=1 python3 .github/workflows/scripts/check_pull_request.py --event "$GITHUB_EVENT_PATH"

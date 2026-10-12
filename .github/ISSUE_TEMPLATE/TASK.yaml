@@ -1,0 +1,32 @@
+name: sailbandwidth task
+description: Track implementation, testing, documentation, refactoring, or maintenance work
+title: "[Task]: "
+type: Task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Track planned maintenance or a small change such as a version bump. To propose a new
+        capability or improvement, use the feature request form instead. Issues are public; do not
+        include internal-only information.
+  - type: textarea
+    id: description
+    attributes:
+      label: Task description
+      description: Describe the work to complete, its scope, the expected deliverables, and the background or value (who benefits and why).
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: The measurable conditions for completion. Enter None for a small change such as a version bump.
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues
+      description: Link related feature requests, parent tasks, or dependencies, if any.
+    validations:
+      required: false

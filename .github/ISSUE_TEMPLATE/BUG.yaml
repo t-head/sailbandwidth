@@ -1,0 +1,65 @@
+name: sailbandwidth bug report
+description: Report unexpected behavior, wrong results, a crash, a hang, or a build failure
+title: "[Bug]: "
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the unexpected behavior and how to reproduce it. Issues and attachments are public:
+        remove credentials and redact sensitive hostnames, addresses, and paths from diagnostics
+        before sharing, but keep the technical content intact. Check
+        [existing issues](https://github.com/t-head/sailbandwidth/issues) for related reports, and see
+        [README.md](https://github.com/t-head/sailbandwidth/blob/main/README.md) for usage.
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Observed behavior
+      options:
+        - Lower bandwidth or higher latency than expected
+        - Incorrect results or data verification failure
+        - Application crash or runtime error
+        - Application hang or timeout
+        - Build or installation failure
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Describe what you expected and what happened, and how it impacts your use case or affected scenarios. Include the first error or warning, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Include the command, testcase, message sizes, environment variables, how often it fails, and whether an earlier version worked. If you cannot reproduce it reliably, describe your observations instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: sailbandwidth version or commit
+      description: The version from src/include/version.h, or the commit for a source build.
+      placeholder: "e.g. v2.2.1"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: SDK and execution environment
+      description: T-Head SAIL SDK version, OS, PPU model, bare-metal or container (image version if known), node count, and PPUs per node.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Original logs and dumps
+      description: |
+        Attach the unedited log or diagnostic output. For a data-verification failure, attach the
+        sailbw_dump_*.txt file the run produced; SAILBW_DUMP_PATH and SAILBW_DUMP_SIZE control its
+        location and size (see README.md). Redact sensitive hostnames and addresses.
+    validations:
+      required: true

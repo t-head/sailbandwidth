@@ -4,13 +4,16 @@ name: sailbandwidth checkin
 on:
   workflow_dispatch:                                       # manual trigger (web/API)
   pull_request:
-    branches: [main]                                       # default branch is main
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, 'release/v[0-9]+.[0-9]+.[0-9]+']     # development and release branches
+    # A PR edit re-checks the title and description; review events are omitted
+    # because the human-review job polls for approvals in the current run.
+    types: [opened, edited, synchronize, reopened, ready_for_review]
   push:
-    branches: [main]                                       # run again after merge
+    branches: [main, 'release/v[0-9]+.[0-9]+.[0-9]+']     # run again after merge
 
 permissions:
   contents: read
+  issues: read
   packages: write
   pull-requests: write
   statuses: write
@@ -27,10 +30,22 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: t-head/.github/.github/workflows/user-precheck.yml@main
 
+  # Stage 1: independent repository checks. Each reusable workflow publishes its
+  # own status and runs the checkers from the pull request working tree.
+  commit-message-check:
+    name: Pre-check (Commit Message and DCO)
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/commit-message-check.yml
+
+  pull-request-check:
+    name: Pre-check (Pull Request)
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/pull-request-check.yml
+
   # Stage 2: AI code review.
   ai-code-review:
     name: AI Code Review (Copilot Gate)
-    needs: precheck
+    needs: [precheck, commit-message-check, pull-request-check]
     if: github.event_name == 'pull_request'
     uses: t-head/.github/.github/workflows/ai-code-review.yml@main
     secrets: inherit
@@ -46,8 +61,14 @@ jobs:
   # Stage 4: Build & test on PPU after all gates pass.
   build-test:
     name: Build & Test (${{ matrix.config.name }}, ZW-890P)
-    needs: [precheck, human-review]
-    if: always() && (needs.precheck.result == 'success' || needs.precheck.result == 'skipped') && (needs.human-review.result == 'success' || needs.human-review.result == 'skipped')
+    needs: [precheck, commit-message-check, pull-request-check, human-review]
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' ||
+        (needs.precheck.result == 'success' &&
+         needs.commit-message-check.result == 'success' &&
+         needs.pull-request-check.result == 'success' &&
+         needs.human-review.result == 'success'))
     runs-on: k8s-runner-group-cpu-thead
     container:
       image: ghcr.io/actions/actions-runner:latest

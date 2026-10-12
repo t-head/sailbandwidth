@@ -1,0 +1,40 @@
+name: Commit Message and DCO Check
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  commit-message-check:
+    name: Commit Message and DCO
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The checker runs from the pull request working tree. Whether a pull
+      # request may modify a workflow or checker is a maintainer review decision,
+      # not a process-enforced gate.
+      - name: Check commit messages and DCO sign-offs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SAILBANDWIDTH_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          status=0
+          count=0
+          while IFS= read -r commit; do
+            count=$((count + 1))
+            if ! PYTHONDONTWRITEBYTECODE=1 python3 .github/workflows/scripts/check_commit_message.py --commit "$commit"; then
+              status=1
+            fi
+          done < <(git rev-list --reverse "$BASE_SHA..$HEAD_SHA")
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=Commit message check::no pull request commits found"
+            exit 1
+          fi
+          exit "$status"
