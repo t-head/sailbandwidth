@@ -4,10 +4,10 @@ name: sailbandwidth checkin
 on:
   workflow_dispatch:                                       # manual trigger (web/API)
   pull_request:
-    branches: [v2.2.1]                                       # release branch
+    branches: [release/v2.2.1]                              # release branch
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [v2.2.1]                                       # run again after merge
+    branches: [release/v2.2.1]                              # run again after merge
 
 permissions:
   contents: read
