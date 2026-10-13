@@ -92,7 +92,7 @@ void JsonOutput::addTestcaseResults(const PeerValueMatrix<double> &matrix, const
     if (verbose) {
         testcase[SBW_BW_MIN] = minVal;
         testcase[SBW_BW_MAX] = maxVal;
-        testcase[SBW_BW_AVG] = sum/count;
+        testcase[SBW_BW_AVG] = count > 0 ? sum/count : 0;
     }
 }
 

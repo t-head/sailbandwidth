@@ -60,20 +60,6 @@ if(OS_INFO_LOWER MATCHES "alios")
     add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
 endif()
 
-# CXX=hgcc breaks CMake's multiarch detection; FindBoost can't
-# locate libs on Debian. Glob manually.
-if(NOT BOOST_LIBRARYDIR)
-    file(GLOB_RECURSE _BOOST_PROBE "/usr/*boost*.so" "/usr/*boost*.a")
-    if(_BOOST_PROBE)
-        list(GET _BOOST_PROBE 0 _FIRST)
-        cmake_path(GET _FIRST PARENT_PATH BOOST_LIBRARYDIR)
-        message(STATUS "BOOST_LIBRARYDIR=${BOOST_LIBRARYDIR}")
-    endif()
-endif()
-
-set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost COMPONENTS program_options REQUIRED)
-
 set(src
     src/testcase.cpp
     src/testcases_ce.cpp
@@ -140,7 +126,6 @@ target_compile_options(sailbandwidth PRIVATE
 
 target_link_options(sailbandwidth PRIVATE ${PPU_SPLIT_ARCHS})
 target_link_libraries(sailbandwidth PRIVATE
-    Boost::program_options
     ${HGGC_LIB}
     ${HGGCRT_LIB}
     ${HGML_LIB}

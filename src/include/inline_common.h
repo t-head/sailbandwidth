@@ -164,10 +164,13 @@ inline bool computeUR(const PeerValueMatrix<double> &bandwidthValues, PeerValueM
         for (int c = 0; c < bandwidthURValues.m_columns; ++c) {
             if (r == c) continue;
 
+            const auto& bw = bandwidthValues.value(r, c);
+            // Pairs skipped by --targetNumPairs sampling stay N/A
+            if (!bw) continue;
+
             int icnTotalBW = 1;
             if (!getIcnTotalBW(r, c, bandwidthValues.key, &icnTotalBW, isMultiTest)) return false;
 
-            const auto& bw = bandwidthValues.value(r, c);
             bandwidthURValues.value(r, c) = (*bw / (double)icnTotalBW) * 100.0;
         }
     }

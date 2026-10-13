@@ -82,6 +82,8 @@ extern int vpipeIdForDie1;
 extern bool testLocalCopy;
 extern bool displayUR;
 extern bool disableVm;
+// -1: all pairs, 0: no pairs, >0: sampled pairs (multinode D2D tests only)
+extern long long targetNumPairs;
 
 #ifdef MULTINODE
 extern int localDevice;
