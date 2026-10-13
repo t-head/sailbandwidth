@@ -42,22 +42,10 @@ Device-to-device transfers may be unidirectional or bidirectional, and read- or 
   enter the SDK installation directory and run `source envsetup.sh` to configure the build
   environment.
 - CMake 3.20 or above (3.24 or newer recommended).
-- Boost `program_options` library (see below).
 - Open MPI (multinode builds only).
 
-Boost is linked statically, so its static archive must be installed. On Ubuntu 20.04 / 22.04 / 24.04:
-
-```
-apt install libboost-program-options-dev
-```
-
-On AliOS 7 / AliOS 8 / AFA3 / AFA4:
-
-```
-yum install boost-static
-```
-
-The build locates the Boost libraries automatically by searching under `/usr`.
+Command-line parsing uses the header-only [argparse](https://github.com/p-ranav/argparse) library
+(v3.2), which is bundled under `argparse/`.
 
 ## Build
 
@@ -147,6 +135,7 @@ options; additional advanced options are defined in
 | `-d, --disableAffinity` | off | Disable automatic CPU affinity control |
 | `-i, --testSamples <n>` | 3 | Benchmark iterations per testcase |
 | `-m, --useMean` | off | Report the mean instead of the median |
+| `-P, --targetNumPairs <n>` | -1 | Target number of rank pairs sampled for multinode tests; `-1` tests all pairs |
 
 Example output (`device_to_device_memcpy_write_ce`, bandwidth in GB/s; the diagonal is `N/A`):
 
