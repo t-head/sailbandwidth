@@ -113,7 +113,7 @@ jobs:
             if command -v apt-get >/dev/null 2>&1; then
               # PPU SDK images do not pre-install cmake/make; collect whatever is missing.
               MISSING_PKGS=""
-              for pkg in libboost-program-options-dev cmake make; do
+              for pkg in cmake make; do
                 if ! dpkg -s "$pkg" >/dev/null 2>&1; then
                   echo "$pkg is missing, will install"
                   MISSING_PKGS="$MISSING_PKGS $pkg"
@@ -151,7 +151,7 @@ jobs:
                 apt-get install -y $MISSING_PKGS
               fi
             elif command -v yum >/dev/null 2>&1; then
-              yum install -y boost-static cmake make
+              yum install -y cmake make
             fi
 
             echo "######################### $(date +%Y%m%d%H%M%S) Setup PPU SDK ##########################"

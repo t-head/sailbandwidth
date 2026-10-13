@@ -56,7 +56,7 @@ template <class T> struct PeerValueMatrix {
 template <class T>
 std::ostream &operator<<(std::ostream &o, const PeerValueMatrix<T> &matrix) {
     // This assumes T is numeric
-    T maxVal = std::numeric_limits<T>::min();
+    T maxVal = std::numeric_limits<T>::lowest();
     T minVal = std::numeric_limits<T>::max();
     T sum = 0;
     int count = 0;
@@ -94,10 +94,12 @@ std::ostream &operator<<(std::ostream &o, const PeerValueMatrix<T> &matrix) {
             } else {
                 o << std::setw(10) << "N/A";
             }
-            sum += val.value_or(0.0);
-            maxVal = std::max(maxVal, val.value_or(0.0));
-            minVal = std::min(minVal, val.value_or(0.0));
-            if (val.value_or(0.0) > 0) count++;
+            if (val.has_value()) {
+                sum += *val;
+                maxVal = std::max(maxVal, *val);
+                minVal = std::min(minVal, *val);
+                ++count;
+            }
         }
         o << std::endl;
     }
@@ -108,9 +110,9 @@ std::ostream &operator<<(std::ostream &o, const PeerValueMatrix<T> &matrix) {
         o << "SUM " << matrix.key << " " << sum << std::endl;
     }
 
-    VERBOSE << "MIN " << matrix.key << " " << minVal << '\n';
-    VERBOSE << "MAX " << matrix.key << " " << maxVal << '\n';
-    VERBOSE << "AVG " << matrix.key << " " << sum / count << '\n';
+    VERBOSE << "MIN " << matrix.key << " " << (count ? minVal : 0) << '\n';
+    VERBOSE << "MAX " << matrix.key << " " << (count ? maxVal : 0) << '\n';
+    VERBOSE << "AVG " << matrix.key << " " << (count ? sum / count : 0) << '\n';
     return o;
 }
 
@@ -164,10 +166,13 @@ inline bool computeUR(const PeerValueMatrix<double> &bandwidthValues, PeerValueM
         for (int c = 0; c < bandwidthURValues.m_columns; ++c) {
             if (r == c) continue;
 
+            const auto& bw = bandwidthValues.value(r, c);
+            // Pairs skipped by --targetNumPairs sampling stay N/A
+            if (!bw) continue;
+
             int icnTotalBW = 1;
             if (!getIcnTotalBW(r, c, bandwidthValues.key, &icnTotalBW, isMultiTest)) return false;
 
-            const auto& bw = bandwidthValues.value(r, c);
             bandwidthURValues.value(r, c) = (*bw / (double)icnTotalBW) * 100.0;
         }
     }

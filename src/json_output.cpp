@@ -61,7 +61,7 @@ void JsonOutput::addTestcaseResults(const PeerValueMatrix<double> &matrix, const
     unsigned int size = m_root[SBW_TITLE][SBW_TESTCASES].size();
     Json::Value &testcase = m_root[SBW_TITLE][SBW_TESTCASES][size-1];
 
-    double maxVal = std::numeric_limits<double>::min();
+    double maxVal = std::numeric_limits<double>::lowest();
     double minVal = std::numeric_limits<double>::max();
     double sum = 0;
     int count = 0;
@@ -77,10 +77,12 @@ void JsonOutput::addTestcaseResults(const PeerValueMatrix<double> &matrix, const
             } else {
                 row.append("N/A");
             }
-            sum += val.value_or(0.0);
-            maxVal = std::max(maxVal, val.value_or(0.0));
-            minVal = std::min(minVal, val.value_or(0.0));
-            if (val.value_or(0.0) > 0) count++;
+            if (val.has_value()) {
+                sum += *val;
+                maxVal = std::max(maxVal, *val);
+                minVal = std::min(minVal, *val);
+                ++count;
+            }
         }
         testcase[SBW_BW_MATRIX].append(row);
     }
@@ -90,9 +92,9 @@ void JsonOutput::addTestcaseResults(const PeerValueMatrix<double> &matrix, const
     testcase[SBW_STATUS] = SBW_PASSED;
 
     if (verbose) {
-        testcase[SBW_BW_MIN] = minVal;
-        testcase[SBW_BW_MAX] = maxVal;
-        testcase[SBW_BW_AVG] = sum/count;
+        testcase[SBW_BW_MIN] = count ? minVal : 0;
+        testcase[SBW_BW_MAX] = count ? maxVal : 0;
+        testcase[SBW_BW_AVG] = count > 0 ? sum/count : 0;
     }
 }
 

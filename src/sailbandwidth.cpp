@@ -16,9 +16,10 @@
  * limitations under the License.
  */
 
-#include <boost/program_options.hpp>
+#include <argparse/argparse.hpp>
 #include <hgml.h>
 #include <iostream>
+#include <unistd.h>
 
 #ifdef MULTINODE
 #include <mpi.h>
@@ -30,12 +31,10 @@
 #include "testcase.h"
 #include "version.h"
 
-namespace opt = boost::program_options;
-
 int sm;
 int deviceCount;
-int nBlocks;
-int nThreads;
+int nBlocks = -1;
+int nThreads = -1;
 unsigned int averageLoopCount;
 unsigned long long bufferSize;
 unsigned long long loopCount;
@@ -51,11 +50,12 @@ bool enableVpipeIdReadOptimize;
 bool enableSplitSizeReadOptimize;
 bool useSingleLinkForIcnRead;
 int linkId = 0;
-int vpipeIdForDie0;
-int vpipeIdForDie1;
+int vpipeIdForDie0 = -1;
+int vpipeIdForDie1 = -1;
 bool testLocalCopy;
 bool displayUR;
 bool disableVm;
+long long targetNumPairs = -1;
 
 Verbosity VERBOSE(verbose);
 Verbosity OUTPUT(shouldOutput);
@@ -194,9 +194,9 @@ int main(int argc, char **argv) {
     std::vector<Testcase*> testcases = createTestcases();
     std::vector<std::string> testcasesToRun;
     std::vector<std::string> testcasePrefixes;
-    long long bufferSizeArg;
-    int averageLoopCountArg;
-    long long loopCountArg;
+    long long bufferSizeArg = defaultBufferSize;
+    int averageLoopCountArg = defaultAverageLoopCount;
+    long long loopCountArg = defaultLoopCount;
     output = new Output();
 
 #ifdef _WIN32
@@ -222,61 +222,74 @@ int main(int argc, char **argv) {
 #endif
 
     // Args parsing
-    opt::options_description visible_opts("sailbandwidth CLI");
-    visible_opts.add_options()
-        ("help,h", "Produce help message")
-        ("bufferSize,b", opt::value<long long>(&bufferSizeArg)->default_value(defaultBufferSize), "Memcpy buffer size in MiB")
-        ("list,l", "List available testcases")
-        ("testcase,t", opt::value<std::vector<std::string>>(&testcasesToRun)->multitoken(), "Testcase(s) to run (by name or index)")
-        ("testcasePrefixes,p", opt::value<std::vector<std::string>>(&testcasePrefixes)->multitoken(), "Testcase(s) to run (by prefix)")
-        ("verbose,v", opt::bool_switch(&verbose)->default_value(false), "Verbose output")
-        ("skipVerification,s", opt::bool_switch(&skipVerification)->default_value(false), "Skips data verification after copy")
-        ("disableAffinity,d", opt::bool_switch(&disableAffinity)->default_value(false), "Disable automatic CPU affinity control")
-        ("testSamples,i", opt::value<int>(&averageLoopCountArg)->default_value(defaultAverageLoopCount), "Iterations of the benchmark")
-        ("useMean,m", opt::bool_switch(&useMean)->default_value(false), "Use mean instead of median for results")
-        ("nBlocks", opt::value<int>(&nBlocks)->default_value(-1), "nBlocks for sm bulk copy test")
-        ("nThreads", opt::value<int>(&nThreads)->default_value(-1), "nThreads for sm bulk copy test")
-        ("displayUR", opt::bool_switch(&displayUR)->default_value(false), "Show utilization ratio matrices in D2D Tests")
-        ("enableSplitSizeReadOptimize", opt::bool_switch(&enableSplitSizeReadOptimize)->default_value(false), "Enable special-case read optimization");
+    argparse::ArgumentParser program("sailbandwidth", SAILBANDWIDTH_VERSION, argparse::default_arguments::none);
+    program.add_argument("-h", "--help").help("Produce help message").flag();
+    program.add_argument("-b", "--bufferSize")
+        .help("Memcpy buffer size in MiB [default: " + std::to_string(defaultBufferSize) + "]")
+        .store_into(bufferSizeArg);
+    program.add_argument("-l", "--list").help("List available testcases").flag();
+    program.add_argument("-t", "--testcase").help("Testcase(s) to run (by name or index)")
+        .nargs(argparse::nargs_pattern::at_least_one).append().store_into(testcasesToRun);
+    program.add_argument("-p", "--testcasePrefixes").help("Testcase(s) to run (by prefix)")
+        .nargs(argparse::nargs_pattern::at_least_one).append().store_into(testcasePrefixes);
+    program.add_argument("-v", "--verbose").help("Verbose output").store_into(verbose);
+    program.add_argument("-s", "--skipVerification").help("Skips data verification after copy").store_into(skipVerification);
+    program.add_argument("-d", "--disableAffinity").help("Disable automatic CPU affinity control").store_into(disableAffinity);
+    program.add_argument("-i", "--testSamples")
+        .help("Iterations of the benchmark [default: " + std::to_string(defaultAverageLoopCount) + "]")
+        .store_into(averageLoopCountArg);
+    program.add_argument("-m", "--useMean").help("Use mean instead of median for results").store_into(useMean);
+    program.add_argument("--nBlocks").help("nBlocks for sm bulk copy test [default: -1]").store_into(nBlocks);
+    program.add_argument("--nThreads").help("nThreads for sm bulk copy test [default: -1]").store_into(nThreads);
+    program.add_argument("--displayUR").help("Show utilization ratio matrices in D2D Tests").store_into(displayUR);
+    program.add_argument("--enableSplitSizeReadOptimize").help("Enable special-case read optimization")
+        .store_into(enableSplitSizeReadOptimize);
+    program.add_argument("-P", "--targetNumPairs").help("Target pairs for multinode tests [default: -1]")
+        .metavar("N").store_into(targetNumPairs);
 
-    opt::options_description all_opts("");
-    all_opts.add(visible_opts);
-    all_opts.add_options()
-        ("loopCount", opt::value<long long>(&loopCountArg)->default_value(defaultLoopCount), "Iterations of memcpy to be performed within a test sample")
-        ("perfFormatter", opt::bool_switch(&perfFormatter)->default_value(false), "Use perf formatter prefix (&&&& PERF) in output")
-        ("useNormalCopy", opt::bool_switch(&useNormalCopy)->default_value(false), "Use normal copy for sm test")
-        ("disableVm", opt::bool_switch(&disableVm)->default_value(false), "Disable virtual mode")
-        ("isSingleDie", opt::bool_switch(&isSingleDie)->default_value(false), "Use single die for ce test")
-        ("testLocalCopy", opt::bool_switch(&testLocalCopy)->default_value(false), "Test local copy in D2D Tests")
-        ("json,j", opt::bool_switch(&jsonOutput)->default_value(false), "Print output in json format instead of plain text.")
-        // ICN read vpipe id controls, only effective when built with --use_vpipeid
-        ("enableVpipeIdReadOptimize", opt::bool_switch(&enableVpipeIdReadOptimize)->default_value(false), "Enable vpipe id read optimization")
-        ("useSingleLinkForIcnRead", opt::bool_switch(&useSingleLinkForIcnRead)->default_value(false), "Use specified vpipe ids for ICN read DMA")
-        ("linkId", opt::value<int>(&linkId)->default_value(0), "Set link number, valid range is 0-PPU_ICN_LINK-1")
-        ("vpipeIdForDie0", opt::value<int>(&vpipeIdForDie0)->default_value(-1), "Vpipe id for die0, valid range is 0-PPU_ICN_LINK_PER_DIE-1")
-        ("vpipeIdForDie1", opt::value<int>(&vpipeIdForDie1)->default_value(-1), "Vpipe id for die1, valid range is 0-PPU_ICN_LINK_PER_DIE-1");
+    program.add_argument("--loopCount").help("Iterations of memcpy to be performed within a test sample")
+        .store_into(loopCountArg).hidden();
+    program.add_argument("--perfFormatter").help("Use perf formatter prefix (&&&& PERF) in output")
+        .store_into(perfFormatter).hidden();
+    program.add_argument("--useNormalCopy").help("Use normal copy for sm test").store_into(useNormalCopy).hidden();
+    program.add_argument("--disableVm").help("Disable virtual mode").store_into(disableVm).hidden();
+    program.add_argument("--isSingleDie").help("Use single die for ce test").store_into(isSingleDie).hidden();
+    program.add_argument("--testLocalCopy").help("Test local copy in D2D Tests").store_into(testLocalCopy).hidden();
+    // Not store_into(jsonOutput): setting it mid-parse would silence the text error report.
+    program.add_argument("-j", "--json").help("Print output in json format instead of plain text.")
+        .flag().hidden();
+    // ICN read vpipe id controls, only effective when built with --use_vpipeid
+    program.add_argument("--enableVpipeIdReadOptimize").help("Enable vpipe id read optimization")
+        .store_into(enableVpipeIdReadOptimize).hidden();
+    program.add_argument("--useSingleLinkForIcnRead").help("Use specified vpipe ids for ICN read DMA")
+        .store_into(useSingleLinkForIcnRead).hidden();
+    program.add_argument("--linkId").help("Set link number, valid range is 0-PPU_ICN_LINK-1")
+        .store_into(linkId).hidden();
+    program.add_argument("--vpipeIdForDie0").help("Vpipe id for die0, valid range is 0-PPU_ICN_LINK_PER_DIE-1")
+        .store_into(vpipeIdForDie0).hidden();
+    program.add_argument("--vpipeIdForDie1").help("Vpipe id for die1, valid range is 0-PPU_ICN_LINK_PER_DIE-1")
+        .store_into(vpipeIdForDie1).hidden();
 
-    opt::variables_map vm;
     try {
-        opt::store(opt::parse_command_line(argc, argv, all_opts), vm);
-        opt::notify(vm);
-    } catch (...) {
+        program.parse_args(argc, argv);
+    } catch (const std::exception &err) {
         output->addVersionInfo();
 
         std::stringstream errmsg;
-        errmsg << "ERROR: Invalid Arguments " << std::endl;
+        errmsg << "ERROR: Invalid Arguments: " << err.what() << std::endl;
         for (int i = 0; i < argc; i++) {
             errmsg << argv[i] << " ";
         }
         std::vector<std::string> messageParts;
         std::stringstream buf;
-        buf << visible_opts;
+        buf << program;
         messageParts.emplace_back(errmsg.str());
         messageParts.emplace_back(buf.str());
         output->recordError(messageParts);
         return 1;
     }
 
+    jsonOutput = program.get<bool>("--json");
     if (jsonOutput) {
         delete output;
         output = new JsonOutput(shouldOutput);
@@ -284,12 +297,12 @@ int main(int argc, char **argv) {
 
     output->addVersionInfo();
 
-    if (vm.count("help")) {
-        OUTPUT << visible_opts << "\n";
+    if (program.get<bool>("--help")) {
+        OUTPUT << program.help().str() << "\n";
         return 0;
     }
 
-    if (vm.count("list")) {
+    if (program.get<bool>("--list")) {
         output->listTestcases(testcases);
         return 0;
     }
@@ -315,6 +328,29 @@ int main(int argc, char **argv) {
     bufferSize = static_cast<unsigned long long>(bufferSizeArg);
     averageLoopCount = static_cast<unsigned int>(averageLoopCountArg);
     loopCount = static_cast<unsigned long long>(loopCountArg);
+
+    if (targetNumPairs < -1) {
+        std::stringstream errmsg;
+        errmsg << "ERROR: Invalid targetNumPairs value: " << targetNumPairs
+               << ". Must be -1 (all pairs), 0 (no pairs), or a positive number.";
+        output->recordError(errmsg.str());
+        return 1;
+    }
+#ifdef MULTINODE
+    if (targetNumPairs > 0) {
+        long long maxPairs = static_cast<long long>(worldSize) * (worldSize - 1);
+        if (targetNumPairs > maxPairs) {
+            std::stringstream errmsg;
+            errmsg << "ERROR: targetNumPairs (" << targetNumPairs
+                   << ") exceeds maximum possible pairs (" << maxPairs
+                   << ") for worldSize " << worldSize
+                   << ". Use -1 for all pairs or specify a value <= " << maxPairs << ".";
+            output->recordError(errmsg.str());
+            return 1;
+        }
+    }
+#endif
+
 
     HG_ASSERT(hgInit(0));
     HGML_ASSERT(hgmlInit());
@@ -343,13 +379,13 @@ int main(int argc, char **argv) {
     if (useSingleLinkForIcnRead) {
         requestedVpipeIdOptions.emplace_back("--useSingleLinkForIcnRead");
     }
-    if (!vm["linkId"].defaulted()) {
+    if (program.is_used("--linkId")) {
         requestedVpipeIdOptions.emplace_back("--linkId " + std::to_string(linkId));
     }
-    if (!vm["vpipeIdForDie0"].defaulted()) {
+    if (program.is_used("--vpipeIdForDie0")) {
         requestedVpipeIdOptions.emplace_back("--vpipeIdForDie0 " + std::to_string(vpipeIdForDie0));
     }
-    if (!vm["vpipeIdForDie1"].defaulted()) {
+    if (program.is_used("--vpipeIdForDie1")) {
         requestedVpipeIdOptions.emplace_back("--vpipeIdForDie1 " + std::to_string(vpipeIdForDie1));
     }
 
@@ -382,6 +418,32 @@ int main(int argc, char **argv) {
     // Some tests can create complex dependencies between devices and function loading requires a
     // device synchronization, so loading in the middle of a test can deadlock.
     preloadKernels(deviceCount);
+
+    // Emit a NOTE explaining that rank pairs are shuffled with or without -P, while final matrices remain ordered by rank.
+#ifdef MULTINODE
+    if (verbose && targetNumPairs != 0 && worldSize > 1) {
+        bool hasRankPairTestcase = testcasesToRun.empty();
+        for (const auto& testcaseID : testcasesToRun) {
+            Testcase* test;
+            try {
+                test = findTestcase(testcases, testcaseID);
+            } catch (const std::string&) {
+                continue;
+            }
+            const auto key = test->testKey();
+            if (key.find("multinode_device_to_device_memcpy_") == 0 ||
+                key.find("multinode_device_to_device_bidirectional_memcpy_") == 0) {
+                hasRankPairTestcase = true;
+                break;
+            }
+        }
+        if (hasRankPairTestcase) {
+            OUTPUT << "NOTE: Multinode D2D rank pairs are executed in a shuffled order, "
+                      "final result matrices remain ordered by rank."
+                   << std::endl << std::endl;
+        }
+    }
+#endif
 
     if (testcasesToRun.size() == 0) {
         // run all testcases
