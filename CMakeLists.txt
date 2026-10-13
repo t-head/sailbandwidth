@@ -94,9 +94,6 @@ set_source_files_properties(src/kernels.cu PROPERTIES LANGUAGE CXX)
 add_executable(sailbandwidth ${src})
 
 set(HGGC_INC ${SDK_PATH}/include)
-set(ALIPPU_LIB "${SDK_PATH}/lib/libalippu.so")
-set(ALIPPU_LINK_DIR ${SDK_PATH}/lib)
-set(UKI_LIB "${SDK_PATH}/lib/libuki.so")
 set(HGGC_LIB hg_wrapper)
 set(HGGCRT_LIB hggc_wrapper)
 find_library(HGML_LIB hgml PATHS ${SDK_PATH}/lib NO_DEFAULT_PATH REQUIRED)
@@ -141,11 +138,9 @@ target_compile_options(sailbandwidth PRIVATE
     -Xcompiler=-Wno-unused-private-field
 )
 
-target_link_options(sailbandwidth PRIVATE ${PPU_SPLIT_ARCHS} "-L${ALIPPU_LINK_DIR}")
+target_link_options(sailbandwidth PRIVATE ${PPU_SPLIT_ARCHS})
 target_link_libraries(sailbandwidth PRIVATE
     Boost::program_options
-    ${ALIPPU_LIB}
-    ${UKI_LIB}
     ${HGGC_LIB}
     ${HGGCRT_LIB}
     ${HGML_LIB}
