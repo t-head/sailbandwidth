@@ -21,7 +21,7 @@
 
 #include "ppu_common.h"
 #include "json_output.h"
-#include "version.h"
+#include "sailbandwidth_version.h"
 
 const std::string SBW_TITLE("sailbandwidth");
 const std::string SBW_HOST_NAME("Hostname");
@@ -91,7 +91,7 @@ void JsonOutput::addTestcaseResults(const PeerValueMatrix<double> &matrix, const
     testcase[SBW_BW_DESCRIPTION] = description;
     testcase[SBW_STATUS] = SBW_PASSED;
 
-    if (verbose) {
+    if (gSettings.verbose) {
         testcase[SBW_BW_MIN] = count ? minVal : 0;
         testcase[SBW_BW_MAX] = count ? maxVal : 0;
         testcase[SBW_BW_AVG] = count > 0 ? sum/count : 0;
@@ -102,6 +102,7 @@ void JsonOutput::addTestcase(const std::string &name, const std::string &status,
     Json::Value testcase;
     testcase[SBW_TESTCASE_NAME] = name;
     testcase[SBW_STATUS] = status;
+    if (!msg.empty()) testcase[status == SBW_WAIVED ? "waiver_reason" : "message"] = msg;
     m_root[SBW_TITLE][SBW_TESTCASES].append(testcase);
 }
 
@@ -131,12 +132,13 @@ void JsonOutput::setTestcaseStatusAndAddIfNeeded(const std::string &name, const 
         unsigned int size = testcases.size();
         if (size > 0 && testcases[size-1][SBW_TESTCASE_NAME].asString() == name) {
             testcases[size-1][SBW_STATUS] = status;
+            if (!msg.empty()) testcases[size-1][status == SBW_WAIVED ? "waiver_reason" : "message"] = msg;
             testCaseExists = true;
         }
     }
 
     if (!testCaseExists) {
-        addTestcase(name, status);
+        addTestcase(name, status, msg);
     }
 }
 
@@ -158,6 +160,7 @@ void JsonOutput::recordError(const std::vector<std::string> &errorParts) {
         }
     }
     m_root[SBW_TITLE][SBW_ERROR] = buf.str();
+    print();
 }
 
 void JsonOutput::recordWarning(const std::string &warning) {
@@ -166,34 +169,38 @@ void JsonOutput::recordWarning(const std::string &warning) {
 
 void JsonOutput::addVersionInfo() {
     m_root[SBW_TITLE][SBW_VERSION] = SAILBANDWIDTH_VERSION;
+    m_root[SBW_TITLE]["git_revision"] = GIT_VERSION;
+    m_root[SBW_TITLE]["HGGC Build Runtime API Version"] = HGGCRT_VERSION;
+    m_root[SBW_TITLE]["HGGC Build Driver API Version"] = HGGC_VERSION;
 }
 
-void JsonOutput::addHggcAndDriverInfo(int hggcVersion, const std::string &driverVersion) {
-    m_root[SBW_TITLE][SBW_HGGC_RUNTIME_VERSION] = hggcVersion;
+void JsonOutput::addHggcAndDriverInfo(int runtimeVersion, int driverApiVersion, const std::string &driverVersion) {
+    m_root[SBW_TITLE][SBW_HGGC_RUNTIME_VERSION] = runtimeVersion;
+    m_root[SBW_TITLE]["HGGC Driver API Version"] = driverApiVersion;
     m_root[SBW_TITLE][SBW_DRIVER_VERSION] = driverVersion;
 }
 
 void JsonOutput::recordDevices(int deviceCount) {
     Json::Value deviceList;
 
-    #ifdef MULTINODE
-        std::vector<char> hostnameExchange(worldSize * STRING_LENGTH);
-        std::vector<char> deviceNameExchange(worldSize * STRING_LENGTH, 0);
-        std::vector<int> localDeviceIdExchange(worldSize, -1);
-        exchangeDeviceInfo(deviceCount, hostnameExchange, deviceNameExchange, localDeviceIdExchange);
-        for (int i = 0; i < worldSize; i++) {
-            char *deviceName = &deviceNameExchange[i * STRING_LENGTH];
-            std::stringstream buf;
-            buf << "Process " << getPaddedProcessId(i) << " (" << &hostnameExchange[i * STRING_LENGTH] << "): device " << localDeviceIdExchange[i] << ": " << deviceName;
-            deviceList.append(buf.str());
-        }
-    #else
-        for (int iDev = 0; iDev < deviceCount; iDev++) {
-            std::stringstream buf;
-            buf << iDev << ": " << getDeviceDisplayInfo(iDev) << ": (" << localHostname << ")";
-            deviceList.append(buf.str());
-        }
-    #endif
+#ifdef MULTINODE
+    std::vector<char> hostnameExchange(worldSize * STRING_LENGTH);
+    std::vector<char> deviceNameExchange(worldSize * STRING_LENGTH, 0);
+    std::vector<int> localDeviceIdExchange(worldSize, -1);
+    exchangeDeviceInfo(deviceCount, hostnameExchange, deviceNameExchange, localDeviceIdExchange);
+    for (int i = 0; i < worldSize; i++) {
+        char *deviceName = &deviceNameExchange[i * STRING_LENGTH];
+        std::stringstream buf;
+        buf << "Process " << getPaddedProcessId(i) << " (" << &hostnameExchange[i * STRING_LENGTH] << "): device " << localDeviceIdExchange[i] << ": " << deviceName;
+        deviceList.append(buf.str());
+    }
+#else
+    for (int iDev = 0; iDev < deviceCount; iDev++) {
+        std::stringstream buf;
+        buf << iDev << ": " << getDeviceDisplayInfo(iDev) << ": (" << env->getHostname() << ")";
+        deviceList.append(buf.str());
+    }
+#endif
     m_root[SBW_TITLE][SBW_DEVICE_LIST] = deviceList;
 }
 
@@ -205,4 +212,19 @@ void JsonOutput::print() {
 
 void JsonOutput::printInfo() {
     // NO-OP
+}
+
+void JsonOutput::printHelp(const std::string& help) {
+    m_root[SBW_TITLE]["help"] = help;
+    print();
+}
+void JsonOutput::listTestcases(const std::vector<Testcase*>& testcases) {
+    for (size_t i = 0; i < testcases.size(); ++i) {
+        Json::Value entry;
+        entry["index"] = static_cast<unsigned int>(i);
+        entry["name"] = testcases[i]->testKey();
+        entry["description"] = testcases[i]->testDesc();
+        m_root[SBW_TITLE]["available_testcases"].append(entry);
+    }
+    print();
 }

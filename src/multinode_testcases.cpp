@@ -29,7 +29,7 @@ void MultinodeDeviceToDeviceReadCE::run(unsigned long long size, unsigned long l
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), new NodeHelperMulti(), PREFER_DST_CONTEXT);
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -40,6 +40,7 @@ void MultinodeDeviceToDeviceReadCE::run(unsigned long long size, unsigned long l
         bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(peerNode, srcNode);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE PPU(row) -> PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy CE PPU(row) -> PPU(column)");
 }
@@ -50,7 +51,7 @@ void MultinodeDeviceToDeviceWriteCE::run(unsigned long long size, unsigned long 
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), new NodeHelperMulti(), PREFER_SRC_CONTEXT);
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -60,6 +61,7 @@ void MultinodeDeviceToDeviceWriteCE::run(unsigned long long size, unsigned long 
         bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(srcNode, peerNode);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy CE PPU(row) <- PPU(column)");
 }
@@ -71,7 +73,7 @@ void MultinodeDeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned l
     PeerValueMatrix<double> bandwidthValuesRead2(worldSize, worldSize, key + "_read2");
     PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -88,6 +90,7 @@ void MultinodeDeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned l
         bandwidthValuesTotal.value(srcDeviceId, peerDeviceId) = results[0] + results[1];
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesRead1, "memcpy CE PPU(row) <-> PPU(column) Read1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesRead2, "memcpy CE PPU(row) <-> PPU(column) Read2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy CE PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -101,7 +104,7 @@ void MultinodeDeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned 
     PeerValueMatrix<double> bandwidthValuesWrite2(worldSize, worldSize, key + "_write2");
     PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -117,6 +120,7 @@ void MultinodeDeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned 
         bandwidthValuesTotal.value(srcDeviceId, peerDeviceId) = results[0] + results[1];
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesWrite1, "memcpy CE PPU(row) <-> PPU(column) Write1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesWrite2, "memcpy CE PPU(row) <-> PPU(column) Write2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy CE PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -129,7 +133,7 @@ void MultinodeDeviceToDeviceReadSM::run(unsigned long long size, unsigned long l
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM(), new NodeHelperMulti(), PREFER_DST_CONTEXT);
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -140,6 +144,7 @@ void MultinodeDeviceToDeviceReadSM::run(unsigned long long size, unsigned long l
         bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(peerNode, srcNode);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) -> PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy SM PPU(row) -> PPU(column)");
 }
@@ -149,7 +154,7 @@ void MultinodeDeviceToDeviceWriteSM::run(unsigned long long size, unsigned long 
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM(), new NodeHelperMulti(), PREFER_SRC_CONTEXT);
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -159,6 +164,7 @@ void MultinodeDeviceToDeviceWriteSM::run(unsigned long long size, unsigned long 
         bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(srcNode, peerNode);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) <- PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy SM PPU(row) <- PPU(column)");
 }
@@ -170,7 +176,7 @@ void MultinodeDeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned l
     PeerValueMatrix<double> bandwidthValuesRead2(worldSize, worldSize, key + "_read2");
     PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -187,6 +193,7 @@ void MultinodeDeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned l
         bandwidthValuesTotal.value(srcDeviceId, peerDeviceId) = results[0] + results[1];
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesRead1, "memcpy SM PPU(row) <-> PPU(column) Read1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesRead2, "memcpy SM PPU(row) <-> PPU(column) Read2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy SM PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -200,7 +207,7 @@ void MultinodeDeviceToDeviceBidirWriteSM::run(unsigned long long size, unsigned 
     PeerValueMatrix<double> bandwidthValuesWrite2(worldSize, worldSize, key + "_write2");
     PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
 
-    for (const auto& pair : generateTestPairs(worldSize, targetNumPairs)) {
+    for (const auto& pair : generateTestPairs(worldSize, gSettings.targetNumPairs)) {
         int srcDeviceId = pair.first;
         int peerDeviceId = pair.second;
 
@@ -216,6 +223,7 @@ void MultinodeDeviceToDeviceBidirWriteSM::run(unsigned long long size, unsigned 
         bandwidthValuesTotal.value(srcDeviceId, peerDeviceId) = results[0] + results[1];
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesWrite1, "memcpy SM PPU(row) <-> PPU(column) Write1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesWrite2, "memcpy SM PPU(row) <-> PPU(column) Write2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy SM PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -249,6 +257,7 @@ void MultinodeAllToOneWriteSM::run(unsigned long long size, unsigned long long l
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM All PPUs -> PPU(column) total bandwidth (GB/s)");
 }
 
@@ -279,6 +288,7 @@ void MultinodeAllFromOneReadSM::run(unsigned long long size, unsigned long long 
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM All PPUs <- PPU(column) total bandwidth (GB/s)");
 }
 
@@ -303,6 +313,7 @@ void MultinodeBroadcastOneToAllSM::run(unsigned long long size, unsigned long lo
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "multicast SM PPU(column) -> All PPUs total bandwidth (GB/s)");
 }
 
@@ -326,6 +337,7 @@ void MultinodeBroadcastAllToAllSM::run(unsigned long long size, unsigned long lo
         delete node;
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "multicast SM All -> All PPUs total bandwidth (GB/s)");
 }
 

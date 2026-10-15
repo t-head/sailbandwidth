@@ -136,6 +136,7 @@ options; additional advanced options are defined in
 | `-i, --testSamples <n>` | 3 | Benchmark iterations per testcase |
 | `-m, --useMean` | off | Report the mean instead of the median |
 | `-P, --targetNumPairs <n>` | -1 | Target number of rank pairs sampled for multinode tests; `-1` tests all pairs |
+| `-F, --format <format>` | text | Output format: text, json, or perf |
 
 Example output (`device_to_device_memcpy_write_ce`, bandwidth in GB/s; the diagonal is `N/A`):
 

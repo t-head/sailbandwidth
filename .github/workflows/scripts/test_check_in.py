@@ -330,16 +330,16 @@ class CommitMessageTests(unittest.TestCase):
 
     def test_version_suffixes_are_compared_completely(self):
         # Hyphenated prerelease/build identifiers and extra components are matched
-        # in full so a mismatch against the header is not missed; the exact header
+        # in full so a mismatch against the project version is not missed; the exact project version
         # value and a sentence-ending period are accepted.
-        header = "v2.2.1"
+        version = "v2.2.1"
         for token in ("v2.2.1-rc1", "v2.2.1-rc-1", "v2.2.1-rc--1",
                       "v2.2.1+build--1", "v2.2.1.1"):
             with self.subTest(token=token):
-                findings = commit.check_message(self.message(body=f"target {token}"), header)
+                findings = commit.check_message(self.message(body=f"target {token}"), version)
                 self.assertIn(14, {n for n, _ in findings})
-        self.assertEqual(commit.check_message(self.message(body="target v2.2.1"), header), [])
-        self.assertEqual(commit.check_message(self.message(body="target v2.2.1."), header), [])
+        self.assertEqual(commit.check_message(self.message(body="target v2.2.1"), version), [])
+        self.assertEqual(commit.check_message(self.message(body="target v2.2.1."), version), [])
 
     def test_version_scan_has_no_catastrophic_backtracking(self):
         # A malformed token with a long ambiguous run must be scanned in bounded

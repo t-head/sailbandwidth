@@ -55,13 +55,15 @@ PRIVATE_PATH_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?:/Users/|/home/|/root/|[A-Za-
 CJK_RE = re.compile("[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]")
 VERSION_RE = re.compile(
     r"(?<![A-Za-z0-9_])v\d+\.\d+\.\d+(?:[.+-][0-9A-Za-z.+-]*[0-9A-Za-z])?(?![A-Za-z0-9_+-]|\.\d)")
-VERSION_DEFINE_RE = re.compile(r'^#define\s+SAILBANDWIDTH_VERSION\s+"([^"]+)"', re.MULTILINE)
+PROJECT_VERSION_RE = re.compile(
+    r"^[ \t]*project\s*\(\s*sailbandwidth\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)(?=\s|\))",
+    re.MULTILINE | re.IGNORECASE)
 SCISSORS = "# ------------------------ >8 ------------------------"
 
 _DEFAULT_REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 REPO_ROOT = os.path.abspath(os.environ.get("SAILBANDWIDTH_REPO_ROOT", _DEFAULT_REPO_ROOT))
-VERSION_HEADER = "src/include/version.h"
+VERSION_SOURCE = "CMakeLists.txt"
 
 
 def git(*args, check=True):
@@ -198,7 +200,7 @@ def check_content(lines, version, findings):
             findings.append((15, f"the message must not contain private paths: {line!r}"))
         for found in VERSION_RE.findall(line):
             if version and found != version:
-                findings.append((14, f"the version {found} does not match {VERSION_HEADER} ({version})"))
+                findings.append((14, f"the version {found} does not match {VERSION_SOURCE} ({version})"))
 
 
 def check_message(message, version=None):
@@ -261,12 +263,17 @@ def strip_comments(message):
 
 def read_version(revision=None):
     if revision:
-        text = git("show", f"{revision}:{VERSION_HEADER}", check=False)
+        text = git("show", f"{revision}:{VERSION_SOURCE}", check=False)
     else:
-        path = os.path.join(REPO_ROOT, VERSION_HEADER)
-        text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
-    match = VERSION_DEFINE_RE.search(text)
-    return match.group(1) if match else None
+        path = os.path.join(REPO_ROOT, VERSION_SOURCE)
+        text = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+    text = re.sub(r"#\[(=*)\[.*?\]\1\]", "", text, flags=re.DOTALL)
+    text = re.sub(r"#[^\n]*", "", text)
+    match = PROJECT_VERSION_RE.search(text)
+    return "v" + match.group(1) if match else None
 
 
 def report(findings, label):
@@ -302,6 +309,8 @@ def main():
         label = f"Commit message file {args.file}"
 
     findings = check_message(message, version)
+    if version is None:
+        findings.append((14, f"cannot read the project VERSION from {VERSION_SOURCE}"))
     return report(findings, label)
 
 

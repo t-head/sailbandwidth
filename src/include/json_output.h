@@ -31,29 +31,31 @@ class JsonOutput : public Output {
  public:
     JsonOutput(bool shouldOutput);
 
-    void addTestcase(const std::string &name, const std::string &status, const std::string &msg = "");
+    void addTestcase(const std::string &name, const std::string &status, const std::string &msg = "") override;
 
-    void setTestcaseStatusAndAddIfNeeded(const std::string &name, const std::string &status, const std::string &msg = "");
+    void setTestcaseStatusAndAddIfNeeded(const std::string &name, const std::string &status, const std::string &msg = "") override;
 
-    void print();
+    void print() override;
 
-    void recordError(const std::string &error);
+    void recordError(const std::string &error) override;
 
-    void recordError(const std::vector<std::string> &errorParts);
+    void recordError(const std::vector<std::string> &errorParts) override;
 
-    void recordErrorCurrentTest(const std::string &errorPart1, const std::string &errorPart2);
+    void recordErrorCurrentTest(const std::string &errorPart1, const std::string &errorPart2) override;
 
-    void recordWarning(const std::string &warning);
+    void recordWarning(const std::string &warning) override;
 
-    void addVersionInfo();
+    void addVersionInfo() override;
 
-    void addHggcAndDriverInfo(int hggcVersion, const std::string &driverVersion);
+    void addHggcAndDriverInfo(int runtimeVersion, int driverApiVersion, const std::string &driverVersion) override;
 
-    void addTestcaseResults(const PeerValueMatrix<double> &matrix, const std::string &description);
+    void addTestcaseResults(const PeerValueMatrix<double> &matrix, const std::string &description) override;
 
-    void printInfo();
+    void printInfo() override;
+    void printHelp(const std::string& help) override;
+    void listTestcases(const std::vector<Testcase*>& testcases) override;
 
-    void recordDevices(int deviceCount);
+    void recordDevices(int deviceCount) override;
 
  private:
     bool shouldOutput;

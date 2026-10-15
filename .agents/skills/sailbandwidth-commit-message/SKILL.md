@@ -52,7 +52,7 @@ The type, the scope, the body, and the issue reference are optional. A scope, wh
 
 12. The message is written in English.
 13. Every statement in the message is supported by the diff. The message does not claim tests or results that were not obtained.
-14. A version number appears only when the version is part of the change and matches `src/include/version.h`.
+14. A version number appears only when the version is part of the change and matches the `project(... VERSION ...)` value in `CMakeLists.txt`, prefixed with `v`.
 15. The message contains no credentials, tokens, internal links, private paths, or internal issue identifiers. Email addresses appear only in `Signed-off-by` trailers.
 
 Requirement 7 applies only when the body uses a key feature list.
@@ -69,7 +69,7 @@ Requirement 7 applies only when the body uses a key feature list.
 8. The scope is omitted when the change spans several areas.
 9. Issue references in the commit message are optional. Include `Closes #<issue>` or `Refs #<issue>` only when the reference helps connect the change to an existing issue; the required issue reference belongs in the pull request description.
 10. Measured performance data are attached to the associated issue rather than included in the commit message.
-11. The version in `src/include/version.h` is upgraded only by maintainers as part of a release. A pull request by a non-maintainer does not change the version; this restriction is review guidance and is not enforced by the prechecks.
+11. The project version in `CMakeLists.txt` is upgraded only by maintainers as part of a release. A pull request by a non-maintainer does not change the version; this restriction is review guidance and is not enforced by the prechecks.
 
 ## Type and scope
 

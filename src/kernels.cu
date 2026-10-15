@@ -506,7 +506,7 @@ double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned 
     HG_ASSERT(hgDeviceGetAttribute(&clock_rate_khz, HG_DEVICE_ATTRIBUTE_CLOCK_RATE, device));
 
     setCUMask(device, reinterpret_cast<const void *>(ptrChasingKernel));
-    int blocks = nBlocks;
+    int blocks = gSettings.nBlocks;
     if (blocks == -1) {
         blocks = smCount;
         ADJUST_SM_COUNT_FOR_SINGLE_DIE(blocks);
@@ -533,7 +533,7 @@ size_t copyKernel(MemcpyDescriptor &desc) {
     HGcontext ctx;
     HGstream stream = desc.mainstream;
     // Keep auto-derived launch geometry local so it cannot leak into later testcases.
-    int blocks = nBlocks, threads = nThreads;
+    int blocks = gSettings.nBlocks, threads = gSettings.nThreads;
 
     HG_ASSERT(hgStreamGetCtx(stream, &ctx));
     HG_ASSERT(hgCtxGetDevice(&dev));
@@ -554,7 +554,7 @@ size_t copyKernel(MemcpyDescriptor &desc) {
     }
 #endif
 
-    if (useNormalCopy || !isD2D) {
+    if (gSettings.useNormalCopy || !isD2D) {
         // Buffers smaller than the 64 MiB small-buffer threshold use the simple
         // copy kernel so the buffer size is not truncated; buffers at or above
         // the threshold use the optimized kernel.
@@ -632,7 +632,7 @@ size_t multicastCopy(HGdeviceptr dstBuffer, HGdeviceptr srcBuffer, size_t size, 
     HG_ASSERT(hgStreamGetCtx(stream, &ctx));
     HG_ASSERT(hgCtxGetDevice(&dev));
 
-    int blocks = nBlocks, threads = nThreads;
+    int blocks = gSettings.nBlocks, threads = gSettings.nThreads;
     if (blocks == -1 || threads == -1) {
         HG_ASSERT(hgDeviceGetAttribute(&blocks, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
         ADJUST_SM_COUNT_FOR_SINGLE_DIE(blocks);
@@ -842,7 +842,15 @@ HGresult multicastMemcmpKernel(HGstream stream, HGdeviceptr buffer, HGdeviceptr 
 
 void preloadKernels(int deviceCount) {
     hggcFuncAttributes unused;
-    for (int iDev = 0; iDev < deviceCount; iDev++) {
+#ifdef MULTINODE
+    // In multinode mode, only preload on the local PPU assigned to the process.
+    const int startDevice = localDevice;
+    const int endDevice = localDevice + 1;
+#else
+    const int startDevice = 0;
+    const int endDevice = deviceCount;
+#endif
+    for (int iDev = startDevice; iDev < endDevice; iDev++) {
         hggcSetDevice(iDev);
         hggcFuncGetAttributes(&unused, &stridingMemcpyKernel);
         hggcFuncGetAttributes(&unused, &spinKernelDevice);
@@ -853,6 +861,7 @@ void preloadKernels(int deviceCount) {
         hggcFuncGetAttributes(&unused, &ptrChasingKernel);
         hggcFuncGetAttributes(&unused, &multicastCopyKernel);
         hggcFuncGetAttributes(&unused, &memsetKernelDevice);
+        hggcFuncGetAttributes(&unused, &memclearKernelByWarpParityDevice);
         hggcFuncGetAttributes(&unused, &memcmpKernelDevice);
         hggcFuncGetAttributes(&unused, &multicastMemcmpKernelDevice);
     }
