@@ -156,7 +156,7 @@ These cases define the intended checker behavior, not exemptions for regressions
 - Build changes cover the normal, debug, stripped, MPI, and feature-gated configurations that the diff affects.
 - README commands, testcase names, defaults, model names, links, JSON statements, and multinode instructions match the current code.
 - Performance examples state their measurement context and do not imply simultaneous aggregate throughput when the cells were measured sequentially.
-- Version strings come from `src/include/version.h` and are not duplicated in other files.
+- Version strings are derived from `project(... VERSION ...)` in `CMakeLists.txt`, without independent version definitions in other files.
 
 ## Normal: Maintainability and consistency
 

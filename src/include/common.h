@@ -40,6 +40,7 @@
 #include <hggc_runtime.h>
 
 #include "drv_eit/hggc_eit_pccl.h" // Includes eit table to be queried for umd.
+#include "test_settings.h"
 
 #define STRING_LENGTH 256
 #define WARP_SIZE 32
@@ -49,11 +50,7 @@
 #define VERIFY_SRC_SEED 0xBAADF00D
 #define VERIFY_DST_SEED 0xCAFEBABE
 
-// Default constants
-const unsigned long long defaultLoopCount = 16;
 const unsigned long long smallBufferThreshold = 64;
-const unsigned long long defaultBufferSize = 512;  // 512 MiB
-const unsigned int defaultAverageLoopCount = 3;
 const unsigned int _MiB = 1024 * 1024;
 const unsigned int _2MiB = 2 * _MiB;
 const unsigned int numThreadPerBlock = 512;
@@ -61,37 +58,13 @@ const unsigned int strideLen = 16; /* cacheLine size 128 Bytes, 16 words */
 const unsigned long latencyMemAccessCnt = 1000000; /* 1M total read accesses to gauge latency */
 extern int sm;
 extern int deviceCount;
-extern int nBlocks;
-extern int nThreads;
-extern unsigned int averageLoopCount;
-extern bool disableAffinity;
-extern bool skipVerification;
-extern bool useMean;
-extern bool jsonOutput;
-// Verbosity
-extern bool verbose;
-extern bool perfFormatter;
-extern bool isSingleDie;
-extern bool useNormalCopy;
-extern bool enableVpipeIdReadOptimize;
-extern bool enableSplitSizeReadOptimize;
-extern bool useSingleLinkForIcnRead;
-extern int linkId;
-extern int vpipeIdForDie0;
-extern int vpipeIdForDie1;
-extern bool testLocalCopy;
-extern bool displayUR;
-extern bool disableVm;
-// -1: all pairs, 0: no pairs, >0: sampled pairs (multinode D2D tests only)
-extern long long targetNumPairs;
 
-#ifdef MULTINODE
+// Device ordinal of the PPU owned by the process (multinode only)
 extern int localDevice;
+// Process rank within one OS
 extern int localRank;
 extern int worldRank;
 extern int worldSize;
-#endif
-extern char localHostname[STRING_LENGTH];
 // testKey of the currently running testcase (for failure reports)
 extern std::string currentTestcaseName;
 
@@ -103,13 +76,13 @@ class Verbosity {
 
     template<typename T>
     Verbosity& operator<<(T input) {
-        if (!jsonOutput && controlVariable) std::cout << input;
+        if (!gSettings.isJsonOutput() && !gSettings.isPerfOutput() && controlVariable) std::cout << input;
         return *this;
     }
 
     using StreamType = decltype(std::cout);
     Verbosity &operator<<(StreamType &(*func)(StreamType &)) {
-        if (!jsonOutput && controlVariable) {
+        if (!gSettings.isJsonOutput() && !gSettings.isPerfOutput() && controlVariable) {
             func(std::cout);
         }
         return *this;
@@ -195,7 +168,7 @@ class PerformanceStatistic {
     size_t count(void) const { return values.size(); }
 
     double mean(void) const {
-        return sum() / count();
+        return count() ? sum() / count() : 0.0;
     }
 
     double variance(void) const {
@@ -210,6 +183,11 @@ class PerformanceStatistic {
 
     double stddev(void) const {
         return (variance() > 0.0 ? std::sqrt(variance()) : 0.0);
+    }
+
+    double coefficientOfVariation(void) const {
+        double m = mean();
+        return (count() > 1 && m > 0.0) ? stddev() / m : 0.0;
     }
 
     double largest(void) const { return values.size() > 0 ? values[values.size() - 1] : 0.0; }
@@ -228,7 +206,7 @@ class PerformanceStatistic {
     }
 
     double returnAppropriateMetric(void) const {
-        if (useMean) {
+        if (gSettings.useMean) {
             return mean();
         } else {
             return median();

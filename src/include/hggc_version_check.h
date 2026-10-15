@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * Modifications Copyright (c) 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * Modifications Copyright (c) 2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +16,17 @@
  * limitations under the License.
  */
 
-#ifndef VERSION_H_
-#define VERSION_H_
+#ifndef HGGC_VERSION_CHECK_H_
+#define HGGC_VERSION_CHECK_H_
 
-#define SAILBANDWIDTH_VERSION "v2.2.1"
+#include <string>
 
-#endif  // VERSION_H_
+class Output;
+
+std::string formatHggcVersionCode(int hggcVersionCode);
+
+std::string getHggcSdkVersion();
+
+bool validateHggcRuntimeAndDriver(Output *output, int *hggcRuntimeVersionOut, int *hggcDriverApiVersionOut, std::string &errorOut);
+
+#endif  // HGGC_VERSION_CHECK_H_

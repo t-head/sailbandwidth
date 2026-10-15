@@ -435,7 +435,7 @@ void MemcpyDispatchInfo::initInfo(const std::shared_ptr<MemcpyInitiator>& memcpy
     if (buffSize == 0) return;
 
     adjustedCopySizes.resize(buffSize);
-    bool use_bulk = !useNormalCopy && dstBuffers[0]->isDeviceBuffer() && srcBuffers[0]->isDeviceBuffer();
+    bool use_bulk = !gSettings.useNormalCopy && dstBuffers[0]->isDeviceBuffer() && srcBuffers[0]->isDeviceBuffer();
     P2PType p2pType = memcpyInitiator->getP2PType();
     if (p2pType == P2PType::CE && sm >= 89 && !icnReadConfig.useSingleLinkForIcnRead) {
         die0streams.resize(buffSize);
@@ -458,7 +458,7 @@ void MemcpyDispatchInfo::initInfo(const std::shared_ptr<MemcpyInitiator>& memcpy
             HG_ASSERT(hgEventCreate(&die1StopFlags[i], HG_EVENT_DEFAULT));
             
             // bind streams to special vpipe id
-            if (icnReadConfig.enableVpipeIdReadOptimize && isRead && !disableVm) {
+            if (icnReadConfig.enableVpipeIdReadOptimize && isRead && !gSettings.disableVm) {
                 int linkIdx = i % PPU_ICN_LINK_PER_DIE();
                 HG_ASSERT(EitTableProvider::setStreamToVpipeId(die0streams[i], dstBuffers[i]->getGidBuffer(), linkIdx));
                 HG_ASSERT(EitTableProvider::setStreamToVpipeId(die1streams[i], dstBuffers[i]->getGidBuffer(), linkIdx));
@@ -482,7 +482,7 @@ void MemcpyDispatchInfo::initInfo(const std::shared_ptr<MemcpyInitiator>& memcpy
             HG_ASSERT(hgEventCreate(&mainStopFlags[i], HG_EVENT_DEFAULT));
 
             // single stream binds to special vpipe id
-            if(icnReadConfig.useSingleLinkForIcnRead && sm >= 89 && !disableVm) {
+            if(icnReadConfig.useSingleLinkForIcnRead && sm >= 89 && !gSettings.disableVm) {
                 int linkIdx = GET_ICN_LINK_NUMBER();
                 // bind to special ring buffer
                 if (linkIdx <= PPU_ICN_LINK_PER_DIE()-1) {
@@ -617,7 +617,7 @@ MemcpyDispatchInfo NodeHelperSingle::dispatchMemcpy(const std::vector<const Memc
         }
     }
 
-    return MemcpyDispatchInfo(p2pType, isSingleDie, contexts, srcBuffers, dstBuffers);
+    return MemcpyDispatchInfo(p2pType, gSettings.isSingleDie, contexts, srcBuffers, dstBuffers);
 }
 
 double NodeHelperSingle::calculateTotalBandwidth(double totalTime, double totalSize, size_t loopCount) {
@@ -676,10 +676,17 @@ std::vector<double> MemcpyOperation::doMemcpyVector(const std::vector<const Memc
     return nodeHelper->calculateVectorBandwidth(results, dispatchInfo.originalRanks);
 }
 
+void MemcpyOperation::recordCoefficientOfVariation(double cv) {
+    if (cv > worstCoeffOfVariation_) {
+        worstCoeffOfVariation_ = cv;
+    }
+}
+
 std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     std::vector<PerformanceStatistic> bandwidthStats(info.srcBuffers.size());
     bool isNdiesCeTest = memcpyInitiator->getP2PType() == P2PType::CE && sm >= 89 && !info.icnReadConfig.useSingleLinkForIcnRead;
     PerformanceStatistic totalBandwidth;
+    PerformanceStatistic sumBandwidthStat;
     HGevent totalStart;
     HGevent totalEnd;
 
@@ -693,7 +700,7 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     HG_ASSERT(hgEventCreate(&totalEnd, HG_EVENT_DEFAULT));
 
     // This loop is for sampling the testcase (which itself has a loop count)
-    for (unsigned int n = 0; n < averageLoopCount; n++) {
+    for (unsigned int n = 0; n < gSettings.averageLoopCount; n++) {
         nodeHelper->streamBlockerReset();
         nodeHelper->synchronizeProcess();
 
@@ -782,16 +789,18 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
         }
         nodeHelper->synchronizeProcess();
 
-        if (!skipVerification) {
+        if (!gSettings.skipVerification) {
             memcpyInitiator->memcmpPattern(info);
         }
 
+        double sampleSumBandwidth = 0.0;
         for (int i = 0; i < bandwidthStats.size(); i++) {
             double bandwidth;
             info.elapsedTime(i, &bandwidth, loopCount);
 
             bandwidth = memcpyInitiator->getAdjustedBandwidth(bandwidth);
             bandwidthStats[i](bandwidth);
+            sampleSumBandwidth += (double) bandwidth;
 
             if (bandwidthValue == BandwidthValue::SUM_BW || bandwidthValue == BandwidthValue::TOTAL_BW || i == 0) {
                 // Verbose print only the values that are used for the final output
@@ -799,6 +808,8 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
                     std::fixed << std::setprecision(2) << (double)bandwidth * 1e-9 << " GB/s\n";
             }
         }
+
+        sumBandwidthStat(sampleSumBandwidth);
 
         if (bandwidthValue == BandwidthValue::TOTAL_BW) {
             float totalTime = 0.0f;
@@ -827,16 +838,22 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     info.freeInfo(memcpyInitiator);
 
     if (bandwidthValue == BandwidthValue::SUM_BW) {
+        recordCoefficientOfVariation(sumBandwidthStat.coefficientOfVariation());
         return {nodeHelper->calculateSumBandwidth(bandwidthStats)};
     } else if (bandwidthValue == BandwidthValue::TOTAL_BW) {
+        recordCoefficientOfVariation(totalBandwidth.coefficientOfVariation());
         return {totalBandwidth.returnAppropriateMetric() * 1e-9};
     } else if (bandwidthValue == BandwidthValue::VECTOR_BW) {
         std::vector<double> ret;
         for (auto stat : bandwidthStats) {
+            recordCoefficientOfVariation(stat.coefficientOfVariation());
             ret.push_back(stat.returnAppropriateMetric() * 1e-9);
         }
         return ret;
     } else {
+        if (!bandwidthStats.empty()) {
+            recordCoefficientOfVariation(bandwidthStats[0].coefficientOfVariation());
+        }
         return {nodeHelper->calculateFirstBandwidth(bandwidthStats)};
     }
 }
@@ -852,7 +869,7 @@ size_t MemcpyInitiatorSM::getAdjustedCopySize(size_t size, HGstream stream, bool
         HG_ASSERT(hgStreamGetCtx(stream, &ctx));
         HG_ASSERT(hgCtxGetDevice(&dev));
 
-        int blocks = nBlocks, threads = nThreads;
+        int blocks = gSettings.nBlocks, threads = gSettings.nThreads;
         if (blocks == -1 || threads == -1) {
             HG_ASSERT(hgDeviceGetAttribute(&blocks, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
             ADJUST_SM_COUNT_FOR_SINGLE_DIE(blocks);
@@ -885,7 +902,7 @@ size_t MemcpyInitiatorCE::memcpyFunc(MemcpyDescriptor &desc) {
     HGcontext srcContext = desc.srcBuffer->getPrimaryCtx();
 
     if (desc.mainstream == nullptr) {
-        if (isSingleDie) {
+        if (gSettings.isSingleDie) {
             for (unsigned int l = 0; l < desc.loopCount; l++) {
                 HG_ASSERT(hgMemcpyAsync(dst, src, desc.copySize, desc.die0stream));
             }

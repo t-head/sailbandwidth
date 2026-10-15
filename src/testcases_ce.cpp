@@ -32,6 +32,7 @@ void HostToDeviceCE::run(unsigned long long size, unsigned long long loopCount) 
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(hostBuffer, deviceBuffer);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE CPU(row) -> PPU(column) bandwidth (GB/s)");
 }
 
@@ -46,6 +47,7 @@ void DeviceToHostCE::run(unsigned long long size, unsigned long long loopCount) 
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(deviceBuffer, hostBuffer);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE CPU(row) <- PPU(column) bandwidth (GB/s)");
 }
 
@@ -64,6 +66,7 @@ void HostToDeviceBidirCE::run(unsigned long long size, unsigned long long loopCo
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(srcBuffers, dstBuffers);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE CPU(row) <-> PPU(column) bandwidth (GB/s)");
 }
 
@@ -82,6 +85,7 @@ void DeviceToHostBidirCE::run(unsigned long long size, unsigned long long loopCo
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(srcBuffers, dstBuffers);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE CPU(row) <-> PPU(column) bandwidth (GB/s)");
 }
 
@@ -91,16 +95,16 @@ void DeviceToDeviceReadCE::run(unsigned long long size, unsigned long long loopC
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), PREFER_DST_CONTEXT);
     
     if(ppuVpipeIdEnable) {
-        memcpyInstance.icnReadConfig.useSingleLinkForIcnRead = useSingleLinkForIcnRead;
+        memcpyInstance.icnReadConfig.useSingleLinkForIcnRead = gSettings.useSingleLinkForIcnRead;
     }
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
-            if (disableVm) {
+            if (gSettings.disableVm) {
                 DeviceBuffer srcBuffer(size, srcDeviceId);
                 DeviceBuffer peerBuffer(size, peerDeviceId);
 
@@ -125,6 +129,7 @@ void DeviceToDeviceReadCE::run(unsigned long long size, unsigned long long loopC
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE PPU(row) -> PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, false, "memcpy CE PPU(row) -> PPU(column)");
 }
@@ -136,7 +141,7 @@ void DeviceToDeviceWriteCE::run(unsigned long long size, unsigned long long loop
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -153,6 +158,7 @@ void DeviceToDeviceWriteCE::run(unsigned long long size, unsigned long long loop
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, false, "memcpy CE PPU(row) <- PPU(column)");
 }
@@ -167,11 +173,11 @@ void DeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned long long 
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
-            if (disableVm) {
+            if (gSettings.disableVm) {
                 DeviceBuffer src1(size, srcDeviceId), src2(size, srcDeviceId);
                 DeviceBuffer peer1(size, peerDeviceId), peer2(size, peerDeviceId);
 
@@ -207,6 +213,7 @@ void DeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned long long 
         }
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesRead1, "memcpy CE PPU(row) <-> PPU(column) Read1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesRead2, "memcpy CE PPU(row) <-> PPU(column) Read2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy CE PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -222,7 +229,7 @@ void DeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned long long
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -246,6 +253,7 @@ void DeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned long long
         }
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesWrite1, "memcpy CE PPU(row) <-> PPU(column) Write1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesWrite2, "memcpy CE PPU(row) <-> PPU(column) Write2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy CE PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -315,10 +323,10 @@ void AllToOneWriteCE::run(unsigned long long size, unsigned long long loopCount)
 void AllToOneReadCE::run(unsigned long long size, unsigned long long loopCount) {
     PeerValueMatrix<double> bandwidthValues(1, deviceCount, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), PREFER_DST_CONTEXT, MemcpyOperation::TOTAL_BW);
-    memcpyInstance.icnReadConfig.enableSplitSizeReadOptimize = enableSplitSizeReadOptimize;
+    memcpyInstance.icnReadConfig.enableSplitSizeReadOptimize = gSettings.enableSplitSizeReadOptimize;
     if(ppuVpipeIdEnable) {
-        memcpyInstance.icnReadConfig.useSingleLinkForIcnRead = useSingleLinkForIcnRead;
-        memcpyInstance.icnReadConfig.enableVpipeIdReadOptimize = enableVpipeIdReadOptimize;
+        memcpyInstance.icnReadConfig.useSingleLinkForIcnRead = gSettings.useSingleLinkForIcnRead;
+        memcpyInstance.icnReadConfig.enableVpipeIdReadOptimize = gSettings.enableVpipeIdReadOptimize;
     }
     allToOneHelper(size, memcpyInstance, bandwidthValues, true);
 
@@ -338,10 +346,10 @@ void OneToAllWriteCE::run(unsigned long long size, unsigned long long loopCount)
 void OneToAllReadCE::run(unsigned long long size, unsigned long long loopCount) {
     PeerValueMatrix<double> bandwidthValues(1, deviceCount, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), PREFER_DST_CONTEXT, MemcpyOperation::TOTAL_BW);
-    memcpyInstance.icnReadConfig.enableSplitSizeReadOptimize = enableSplitSizeReadOptimize;
+    memcpyInstance.icnReadConfig.enableSplitSizeReadOptimize = gSettings.enableSplitSizeReadOptimize;
     if(ppuVpipeIdEnable) {
-        memcpyInstance.icnReadConfig.useSingleLinkForIcnRead = useSingleLinkForIcnRead;
-        memcpyInstance.icnReadConfig.enableVpipeIdReadOptimize = enableVpipeIdReadOptimize;
+        memcpyInstance.icnReadConfig.useSingleLinkForIcnRead = gSettings.useSingleLinkForIcnRead;
+        memcpyInstance.icnReadConfig.enableVpipeIdReadOptimize = gSettings.enableVpipeIdReadOptimize;
     }
     oneToAllHelper(size, memcpyInstance, bandwidthValues, true);
 

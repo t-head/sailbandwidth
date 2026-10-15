@@ -324,6 +324,8 @@ class MemcpyOperation : public MemoryOperation {
 
  private:
     unsigned long long loopCount;
+    double worstCoeffOfVariation_ = -1.0;
+    void recordCoefficientOfVariation(double cv);
 
  protected:
     size_t *procMask;
@@ -337,6 +339,8 @@ class MemcpyOperation : public MemoryOperation {
     MemcpyOperation(unsigned long long loopCount, MemcpyInitiator *_memcpyInitiator, ContextPreference ctxPreference = ContextPreference::PREFER_SRC_CONTEXT, BandwidthValue bandwidthValue = BandwidthValue::USE_FIRST_BW);
     MemcpyOperation(unsigned long long loopCount, MemcpyInitiator *_memcpyInitiator, NodeHelper *_nodeHelper, ContextPreference ctxPreference = ContextPreference::PREFER_SRC_CONTEXT, BandwidthValue bandwidthValue = BandwidthValue::USE_FIRST_BW);
     virtual ~MemcpyOperation();
+
+    double worstCoefficientOfVariation() const { return worstCoeffOfVariation_; }
 
     IcnReadConfig icnReadConfig = {};
     // Lists of paired nodes will be executed simultaneously

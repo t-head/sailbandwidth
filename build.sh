@@ -17,7 +17,7 @@ parser.add_argument('--build_type', default='rel_sym', type=str, help="Build typ
 parser.add_argument('--verbose', default=False, action='store_true', help="show more compile message")
 parser.add_argument('--ppu_archs', default='ppu_10,ppu_15', type=str, help="set ppu archs", choices=['ppu_10', 'ppu_15', 'ppu_10,ppu_15'])
 parser.add_argument('--use_mpi', default=False, action='store_true', help="use mpi to build multinode version of sailbandwidth")
-parser.add_argument('--use_vpipeid', default=False, action='store_true', help="enable use_vpipeid compile macro")
+parser.add_argument('--use_vpipeid', default=True, action='store_true', help="enable use_vpipeid compile macro")
 parser.add_argument('--cpu_num', default=0, type=int, help="specify the number of parallel jobs for make -j (default: use all CPUs)")
 EOF
 
@@ -47,7 +47,7 @@ if [[ $USE_MPI ]]; then
 fi
 
 if [[ $USE_VPIPEID ]]; then
-    cmake_option="${cmake_option} -DUSE_VPIPEID=1"
+    cmake_option="${cmake_option} -DUSE_VPIPEID=TRUE"
 fi
 
 cmake -S . -B build/ ${cmake_option}

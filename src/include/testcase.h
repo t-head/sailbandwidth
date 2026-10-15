@@ -25,21 +25,44 @@
 #include "common.h"
 #include "memcpy.h"
 
+/* Carries waiver reason when a test cannot run on the current system */
+struct [[nodiscard]] FilterResult {
+    bool passed;
+    std::string reason;
+    explicit operator bool() const { return passed; }
+    static FilterResult pass() { return {true, ""}; }
+    static FilterResult waive(std::string reason) { return {false, std::move(reason)}; }
+    // Note: overloaded operator&& does not short-circuit; both operands are always
+    // evaluated.
+    friend FilterResult operator&&(FilterResult a, FilterResult b) { return a ? b : a; }
+};
+
 class Testcase {
  protected:
     std::string key;
     std::string desc;
 
-    static bool filterHasAccessiblePeerPairs();
-    static bool filterSupportsMulticast();
+    static FilterResult filterHasAccessiblePeerPairs();
+    static FilterResult filterSupportsMulticast();
 #ifdef MULTINODE
-    static bool filterHasMultiplePPUsMultinode();
+    static FilterResult filterHasMultiplePPUsMultinode();
 #endif
     // helper functions
     void allToOneHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead);
     void oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead);
     void allHostHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost);
     void allHostBidirHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost);
+
+    // Copy the worst run-to-run coefficient of variation measured by the
+    // operation onto the result matrix, so it is emitted as the test's
+    // COEFFICIENT_OF_VARIATION stability metric. No-op if nothing was measured.
+    static void recordStability(PeerValueMatrix<double> &bandwidthValues, const MemcpyOperation &memcpyInstance) {
+        double cv = memcpyInstance.worstCoefficientOfVariation();
+        if (cv >= 0.0) {
+            bandwidthValues.coefficientOfVariation = cv;
+        }
+    }
+
     void latencyHelper(const MemcpyBuffer &dataBuffer, bool measureDeviceToDeviceLatency);
 
  public:
@@ -50,7 +73,9 @@ class Testcase {
     std::string testDesc();
 
     // Returns true if the testcase can be run on the current system
-    virtual bool filter() { return true; }
+    virtual FilterResult filter() {
+        return FilterResult::pass();
+    }
 
     // Runs the testcase
     virtual void run(unsigned long long size, unsigned long long loopCount) = 0;
@@ -125,7 +150,9 @@ class DeviceToDeviceReadCE: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~DeviceToDeviceReadCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device CE Write memcpy using hgMemcpyAsync
@@ -136,7 +163,9 @@ class DeviceToDeviceWriteCE: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~DeviceToDeviceWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device Bidirectional Read CE memcpy using hgMemcpyAsync
@@ -148,7 +177,9 @@ class DeviceToDeviceBidirReadCE: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~DeviceToDeviceBidirReadCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device Bidirectional Write CE memcpy using hgMemcpyAsync
@@ -160,7 +191,9 @@ class DeviceToDeviceBidirWriteCE: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~DeviceToDeviceBidirWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device local memcpy using hgMemcpyAsync
@@ -224,7 +257,9 @@ class AllToOneWriteCE: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~AllToOneWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // All to One CE Read memcpy using hgMemcpyAsync
@@ -236,7 +271,9 @@ class AllToOneReadCE: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~AllToOneReadCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // One to All CE Write memcpy using hgMemcpyAsync
@@ -248,7 +285,9 @@ class OneToAllWriteCE: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~OneToAllWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // One to All CE Read memcpy using hgMemcpyAsync
@@ -260,7 +299,9 @@ class OneToAllReadCE: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~OneToAllReadCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // SM Testcase classes
@@ -300,7 +341,9 @@ class DeviceToDeviceReadSM: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~DeviceToDeviceReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device SM Latency ptr chase kernel
@@ -312,7 +355,9 @@ class DeviceToDeviceLatencySM: public Testcase {
             "\t--bufferSize flag is ignored") {}
     virtual ~DeviceToDeviceLatencySM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device SM Write memcpy using a copy kernel
@@ -323,7 +368,9 @@ class DeviceToDeviceWriteSM: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~DeviceToDeviceWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device bidirectional SM Read memcpy using a copy kernel
@@ -335,7 +382,9 @@ class DeviceToDeviceBidirReadSM: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~DeviceToDeviceBidirReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // Device to Device bidirectional SM Write memcpy using a copy kernel
@@ -347,7 +396,9 @@ class DeviceToDeviceBidirWriteSM: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~DeviceToDeviceBidirWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // All to Host SM memcpy using a copy kernel
@@ -401,7 +452,9 @@ class AllToOneWriteSM: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~AllToOneWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // All to One SM Read memcpy using a copy kernel
@@ -413,7 +466,9 @@ class AllToOneReadSM: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~AllToOneReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // One to All SM Write memcpy using a copy kernel
@@ -425,7 +480,9 @@ class OneToAllWriteSM: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~OneToAllWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 // One to All SM Read memcpy using a copy kernel
@@ -437,7 +494,9 @@ class OneToAllReadSM: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~OneToAllReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+    FilterResult filter() {
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
 };
 
 #ifdef MULTINODE
@@ -449,7 +508,9 @@ class MultinodeDeviceToDeviceReadCE: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceReadCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device CE Write memcpy using hgMemcpyAsync
@@ -460,7 +521,9 @@ class MultinodeDeviceToDeviceWriteCE: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device Bidirectional Read CE memcpy using hgMemcpyAsync
@@ -472,7 +535,9 @@ class MultinodeDeviceToDeviceBidirReadCE: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceBidirReadCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device Bidirectional Write CE memcpy using hgMemcpyAsync
@@ -484,7 +549,9 @@ class MultinodeDeviceToDeviceBidirWriteCE: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceBidirWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device SM Read memcpy using a copy kernel
@@ -495,7 +562,9 @@ class MultinodeDeviceToDeviceReadSM: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device SM Write memcpy using a copy kernel
@@ -506,7 +575,9 @@ class MultinodeDeviceToDeviceWriteSM: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device bidirectional SM Read memcpy using a copy kernel
@@ -518,7 +589,9 @@ class MultinodeDeviceToDeviceBidirReadSM: public Testcase {
             "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceBidirReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 // Device to Device bidirectional SM Write memcpy using a copy kernel
@@ -530,7 +603,9 @@ class MultinodeDeviceToDeviceBidirWriteSM: public Testcase {
             "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
     virtual ~MultinodeDeviceToDeviceBidirWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 class MultinodeAllToOneWriteSM: public Testcase {
@@ -541,7 +616,9 @@ class MultinodeAllToOneWriteSM: public Testcase {
             "\tWrite tests launch a copy from the peer to the target device using the peer's context.") {}
     virtual ~MultinodeAllToOneWriteSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 class MultinodeAllFromOneReadSM: public Testcase {
@@ -552,7 +629,9 @@ class MultinodeAllFromOneReadSM: public Testcase {
             "\tRead tests launch a copy from the target device to the peer using the peer's context.") {}
     virtual ~MultinodeAllFromOneReadSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode();
+    }
 };
 
 class MultinodeBroadcastOneToAllSM: public Testcase {
@@ -563,7 +642,9 @@ class MultinodeBroadcastOneToAllSM: public Testcase {
             "\tTests launch a copy from the target device to the multicast memory on target using the target's context.") {}
     virtual ~MultinodeBroadcastOneToAllSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode() && Testcase::filterSupportsMulticast(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode() && Testcase::filterSupportsMulticast();
+    }
 };
 
 class MultinodeBroadcastAllToAllSM: public Testcase {
@@ -575,7 +656,9 @@ class MultinodeBroadcastAllToAllSM: public Testcase {
             "\tTests launch copies from the target device to the multicast memory on target using the target's context.") {}
     virtual ~MultinodeBroadcastAllToAllSM() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode() && Testcase::filterSupportsMulticast(); }
+    FilterResult filter() {
+        return Testcase::filterHasMultiplePPUsMultinode() && Testcase::filterSupportsMulticast();
+    }
 };
 
 // TODO(pgumienny) - add remaining combination of Read/Write CE/SM once the tooling is in
@@ -587,7 +670,7 @@ class MultinodeBisectWriteCE: public Testcase {
             "\tPPU owned by rank A writes to PPU owned by rank (A + N/2) % N.\n") {}
     virtual ~MultinodeBisectWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
-    bool filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+    FilterResult filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
 };
 #endif
 

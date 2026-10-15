@@ -21,6 +21,8 @@
 
 #include <cstdarg>
 
+#include "environment.h"
+
 void RecordError(const std::stringstream &errmsg);
 void RecordWarning(const std::stringstream &warnmsg);
 
@@ -32,7 +34,7 @@ void RecordWarning(const std::stringstream &warnmsg);
 // }
 
 #ifdef MULTINODE
-#define HOST_INFO " on " << localHostname << ", rank = " << worldRank
+#define HOST_INFO " on " << (env ? env->getHostname() : "unknown") << ", rank = " << worldRank
 #else
 #define HOST_INFO ""
 #endif
