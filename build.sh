@@ -13,7 +13,7 @@ main() {
 ARGPARSE_DESCRIPTION="sailbandwidth build script"      # this is optional
 argparse "$@" <<EOF || exit 1
 parser.add_argument('--rebuild', default=False, action='store_true', help="clean and rebuild")
-parser.add_argument('--build_type', default='rel_sym', type=str, help="Symbol control. rel_sym: release with some symbols. dbg: debug version. rel_no_sym: release and strip symbol.")
+parser.add_argument('--build_type', default='rel_sym', type=str, help="Build type: rel_sym (default) or dbg.", choices=['rel_sym', 'dbg'])
 parser.add_argument('--verbose', default=False, action='store_true', help="show more compile message")
 parser.add_argument('--ppu_archs', default='ppu_10,ppu_15', type=str, help="set ppu archs", choices=['ppu_10', 'ppu_15', 'ppu_10,ppu_15'])
 parser.add_argument('--use_mpi', default=False, action='store_true', help="use mpi to build multinode version of sailbandwidth")
@@ -25,8 +25,6 @@ cmake_option="-DPPU_ARCHS=$PPU_ARCHS"
 
 if [[ $BUILD_TYPE == "dbg" ]]; then
     cmake_option="${cmake_option} -DBUILD_DEBUG=ON"
-elif [[ $BUILD_TYPE == "rel_no_sym" ]]; then
-    cmake_option="${cmake_option} -DREL_NO_SYM=ON"
 fi
 
 if [[ $REBUILD ]]; then
