@@ -1,0 +1,47 @@
+name: sailbandwidth feature request
+description: Propose a new capability, testcase, option, or improvement
+title: "[Feature]: "
+type: Feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a new capability or improvement. Describe the need and its value; the acceptance
+        criteria and test plan can be refined with maintainers. Use the Task form for implementation,
+        testing, documentation, refactoring, or maintenance work. Check
+        [existing requests](https://github.com/t-head/sailbandwidth/issues?q=is%3Aissue%20type%3AFeature)
+        first and link related discussions. Issues are public; do not include internal-only information.
+  - type: textarea
+    id: requirement
+    attributes:
+      label: Requirement
+      description: Describe the capability or improvement you need and its scope. Include relevant PPU platform constraints; a detailed implementation proposal is not required.
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: Background and value
+      description: Who benefits and in which use cases? Is this specific to a PPU model, SDK version, or topology? How does it improve current workflows, and how urgent is it?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Test acceptance criteria
+      description: |
+        The measurable conditions that define completion. State the target Zhenwu PPU platforms (for
+        example M890, 810, or 810E), how to build and run the check (build command, testcase or
+        option, and environment variables), and the expected functional or performance result with
+        units and, for performance, the baseline. These criteria must match the tests reported in the
+        pull request's Validation section. State what is known now and note any criteria to refine
+        with maintainers.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: How do you handle this today, what alternatives did you consider, and what limitations remain?
+    validations:
+      required: false
