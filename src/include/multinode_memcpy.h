@@ -20,8 +20,13 @@
 #define MULTINODE_MEMCPY_H_
 #ifdef MULTINODE
 
+#include <utility>
+#include <vector>
+
 #include "ppu_common.h"
 #include "memcpy.h"
+
+std::vector<std::pair<int, int>> generateTestPairs(int worldSize, long long targetNumPairs = -1);
 
 class MultinodeMemoryAllocation {
  protected:

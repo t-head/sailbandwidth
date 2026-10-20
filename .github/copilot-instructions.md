@@ -35,7 +35,7 @@ Review every pull request in this repository according to the following rules.
 - The `.cu` and `.cuh` extensions belong to the PPU hgcc build and do not indicate a CUDA runtime dependency.
 - The NVIDIA copyright notices and the statement in the README Copyright section that sailbandwidth is derived from nvbandwidth are required attribution.
 - `cu_mask` and related dispatch-mask names refer to PPU Compute Unit and EIT concepts unless code evidence shows otherwise.
-- Boost is a system build dependency and is not bundled; its absence from `Licenses.txt` is not a defect.
+- Command-line parsing uses the unmodified header-only argparse library bundled under `argparse/`; its MIT license notice is retained in `Licenses.txt`. Boost is not a build dependency.
 - The D2D Read and Write arrows follow the AccessType display convention inherited from nvbandwidth, which is retained for output compatibility. Only regressions, internally inconsistent new labels, or undocumented contract changes are reported.
 - Definitions for unsupported multicast and bisect paths are not findings while they remain unregistered or filtered and are not exposed as supported.
 - Hidden diagnostic options are not required to be listed among the common README options.
