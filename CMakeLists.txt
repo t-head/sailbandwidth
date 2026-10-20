@@ -24,24 +24,8 @@ message(STATUS "SDK_PATH=${SDK_PATH}")
 set(PPU_ARCHS "ppu_10,ppu_15" CACHE STRING "PPU ARCH version")
 message(STATUS "PPU_ARCHS=${PPU_ARCHS}")
 
-set(REL_NO_SYM FALSE CACHE BOOL "Release with stripped symbols and anonymized paths")
-message(STATUS "REL_NO_SYM=${REL_NO_SYM}")
-
 set(CMAKE_C_COMPILER ${SDK_PATH}/bin/hgcc)
 set(CMAKE_CXX_COMPILER ${SDK_PATH}/bin/hgcc)
-
-execute_process(
-    COMMAND ${CMAKE_CXX_COMPILER} -Xcompiler -ffile-prefix-map=/tmp=. -x c /dev/null -c -o /dev/null
-    RESULT_VARIABLE PREFIX_MAP_RESULT
-    OUTPUT_QUIET ERROR_QUIET
-)
-
-if(PREFIX_MAP_RESULT EQUAL 0)
-    set(FILE_PREFIX_MAP "-ffile-prefix-map")
-else()
-    set(FILE_PREFIX_MAP "-fmacro-prefix-map;-fdebug-prefix-map")
-endif()
-message(STATUS "FILE_PREFIX_MAP=${FILE_PREFIX_MAP}")
 
 set(USE_VPIPEID FALSE CACHE BOOL "Enable USE_VPIPEID compile macro")
 message(STATUS "USE_VPIPEID=${USE_VPIPEID}")
@@ -120,13 +104,6 @@ endif()
 list(APPEND PPU_FLAGS -I${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 list(APPEND PPU_FLAGS -I${HGGC_INC})
 
-get_filename_component(SAILBANDWIDTH_ROOT ${CMAKE_CURRENT_SOURCE_DIR} ABSOLUTE)
-if (REL_NO_SYM)
-    foreach(_prefix_map_option IN LISTS FILE_PREFIX_MAP)
-        list(APPEND PPU_FLAGS -Xcompiler=${_prefix_map_option}=${SAILBANDWIDTH_ROOT}=.)
-    endforeach()
-endif()
-
 target_include_directories(sailbandwidth PRIVATE . src src/include ${HGGC_INC})
 target_compile_options(sailbandwidth PRIVATE
     ${PPU_FLAGS}
@@ -164,11 +141,5 @@ if (MULTINODE)
     target_compile_definitions(sailbandwidth PRIVATE
             OMPI_SKIP_MPICXX
             MULTINODE
-    )
-endif()
-
-if (REL_NO_SYM)
-    add_custom_command(TARGET sailbandwidth POST_BUILD
-        COMMAND strip --strip-all $<TARGET_FILE:sailbandwidth>
     )
 endif()
