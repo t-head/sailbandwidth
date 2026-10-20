@@ -1,5 +1,7 @@
 # sailbandwidth PR unit-test commands
 # Each non-empty, non-comment line is executed as a shell command.
+# New lines run inside the build-test job and are automatically included in
+# sailbandwidth Tests Gate; no gate changes are needed.
 # Commands mirror run_sailbandwidth_test.sh (single-iteration smoke tests).
 # The binary is produced by build.sh into ./build/sailbandwidth.
 

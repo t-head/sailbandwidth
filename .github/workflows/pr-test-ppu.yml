@@ -220,3 +220,62 @@ jobs:
           fi
 
           python3 .github/workflows/scripts/display-test-summary.py "$XML_FILE"
+
+  # Single stable required check for branch rules: passes only when every job
+  # in needs succeeded (and actually ran, on pull requests).
+  tests-gate:
+    name: sailbandwidth Tests Gate
+    # Add each new required job ID here. If it also runs outside PRs, add it to
+    # "Require build and test jobs to succeed" below.
+    # New testcase commands in scripts/casecmd.list are already covered by the
+    # build-test job. Only jobs listed here are checked, including all their
+    # matrix entries.
+    needs:
+      - precheck              # Secret scan
+      - commit-message-check  # Commit message and DCO
+      - pull-request-check    # Pull request description
+      - ai-code-review        # AI review
+      - human-review          # Human approval
+      - build-test            # Build and every testcase from scripts/casecmd.list
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Reject unsupported events
+        if: >-
+          always() &&
+          github.event_name != 'pull_request' &&
+          github.event_name != 'push' &&
+          github.event_name != 'workflow_dispatch'
+        run: |
+          echo "::error::Unsupported event: $GITHUB_EVENT_NAME"
+          exit 1
+
+      - name: Reject failed or cancelled jobs
+        if: >-
+          always() &&
+          (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+        run: |
+          echo "::error::A required job failed or was cancelled. See its logs."
+          exit 1
+
+      - name: Require build and test jobs to succeed
+        # These jobs must run on PRs, pushes, and manual runs.
+        if: >-
+          always() && needs.build-test.result != 'success'
+        run: |
+          echo "::error::A required build or test job did not succeed."
+          exit 1
+
+      - name: Reject skipped jobs on pull requests
+        # Outside PRs, the five PR-only checks may be skipped.
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          contains(needs.*.result, 'skipped')
+        run: |
+          echo "::error::Pull requests require every job in needs to succeed."
+          exit 1
+
+      - name: All required checks passed
+        run: echo "Required checks passed."
