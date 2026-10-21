@@ -53,6 +53,7 @@ The pull request title and description are intended for reviewers and are not re
 17. All required CI checks must pass, and required checks must not be bypassed.
 18. The pull request must be merged with Squash and merge.
 19. At merge time, the pull request must contain exactly one commit, and the merge commit message must be identical to the commit message except for the pull request number appended to the title.
+20. The pull request is assigned at creation to the author on whose behalf the agent acts; assigning a different person is an explicit, manual adjustment. When the creating account cannot assign, the pull request is left unassigned and a maintainer is asked to assign it.
 
 ## Result
 

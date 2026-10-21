@@ -170,16 +170,20 @@ def check_dco(lines):
 
 def check_footer(lines, findings):
     seen_signoff = False
+    seen_reference = False
     for line in lines:
         if line.startswith("Signed-off-by:"):
             seen_signoff = True
         elif ISSUE_KEYWORD_RE.match(line):
+            seen_reference = True
             if not ISSUE_RE.match(line):
                 findings.append((10, f"the issue reference must be 'Closes #<issue>' or 'Refs #<issue>': {line!r}"))
             if seen_signoff:
                 findings.append((9, f"the issue reference must precede the Signed-off-by trailers: {line!r}"))
         else:
             findings.append((9, f"the footer contains only the issue reference and Signed-off-by trailers: {line!r}"))
+    if not seen_reference:
+        findings.append((10, "the footer must contain the issue reference 'Closes #<issue>' or 'Refs #<issue>'"))
 
 
 def check_content(lines, version, findings):
@@ -241,8 +245,7 @@ def check_message(message, version=None):
                 findings.append((9, "a blank line must separate the footer from the body"))
 
     check_body(body_paragraphs, findings)
-    if footer:
-        check_footer(footer, findings)
+    check_footer(footer, findings)
     findings.extend(check_dco(lines))
     check_content(lines, version, findings)
     return sorted(set(findings))
