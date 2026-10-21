@@ -124,6 +124,7 @@ These cases define the intended checker behavior, not exemptions for regressions
 
 - A new testcase command added to `.github/workflows/scripts/casecmd.list` runs inside the `build-test` job and is covered by `sailbandwidth Tests Gate` automatically; a new top-level workflow job is added to `tests-gate.needs`.
 - A required job failure, cancellation, or an unexpected skip on a pull request fails `sailbandwidth Tests Gate`; a green gate beside a needed job that did not succeed is a defect.
+- `build-test` runs on every event, so the gate requires it to succeed unconditionally. A job that expands or runs only on `pull_request` events — for example a dynamic test matrix — is expected to be skipped on `push` and `workflow_dispatch`; such a job is required with the `pull_request`-guarded form in the gate, not the unconditional list, and its expected non-PR skip is not reported as a gate defect.
 - Changes to CI routing or gate rules are verified against both passing and failing cases: a clean run, a failed job, and the PR-only jobs on pull_request versus push events.
 
 ## Major: Performance validity and regression risk
