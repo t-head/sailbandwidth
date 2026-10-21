@@ -243,9 +243,11 @@ class IssueStateTests(unittest.TestCase):
 
 class CommitMessageTests(unittest.TestCase):
     signoff = "Signed-off-by: Contributor <contributor@users.noreply.github.com>"
+    reference = "Refs #11"
 
     def message(self, subject="chore: add checks", body="", footer=None):
-        return subject + "\n\n" + (body + "\n\n" if body else "") + (footer or self.signoff) + "\n"
+        return subject + "\n\n" + (body + "\n\n" if body else "") \
+            + (footer or self.reference + "\n" + self.signoff) + "\n"
 
     def test_accepted_messages(self):
         for body in ("", "- check metadata", "Explain the behavior.\n\nDescribe the change.",
@@ -265,11 +267,13 @@ class CommitMessageTests(unittest.TestCase):
     def test_dco_and_footer_regressions(self):
         invalid = (("Closes #11\n\n" + self.signoff, 9),
                    ("Closes 11\n" + self.signoff, 10),
-                   ("Signed-off-by: Contributor <a@@example.com>", 11))
+                   ("Refs #11\nSigned-off-by: Contributor <a@@example.com>", 11))
         for footer, rule in invalid:
             with self.subTest(footer=footer):
                 self.assertIn(rule, {n for n, _ in commit.check_message(self.message(footer=footer))})
-        self.assertIn(11, {n for n, _ in commit.check_message("chore: add checks\n")})
+        findings = {n for n, _ in commit.check_message("chore: add checks\n")}
+        self.assertIn(10, findings)
+        self.assertIn(11, findings)
 
     def test_cross_repository_issue_reference_is_rejected(self):
         # A cross-repository reference is a candidate: in the footer it fails
@@ -298,11 +302,23 @@ class CommitMessageTests(unittest.TestCase):
         self.assertEqual(commit.check_message(self.message(subject="update the build")), [])
         self.assertEqual(commit.check_message(self.message(subject="http://example.com documents the endpoint")), [])
 
+    def test_missing_issue_reference_is_rejected(self):
+        # A sign-off-only footer does not satisfy the mandatory reference.
+        self.assertIn(10, {n for n, _ in commit.check_message(self.message(footer=self.signoff))})
+        # A reference separated from the sign-offs by prose stays in the body:
+        # it fails the placement requirement and leaves the footer without a
+        # reference. (A reference directly above the sign-offs is absorbed
+        # into the footer and reported by requirement 9 alone.)
+        findings = {n for n, _ in commit.check_message(
+            self.message(body="Refs #11\nMore prose.", footer=self.signoff))}
+        self.assertIn(9, findings)
+        self.assertIn(10, findings)
+
     def test_non_latin_signoff_name_is_accepted(self):
         # A sign-off carries the contributor's Git identity, which may be
         # non-Latin; requirement 12 applies to the message prose, not trailers.
         signoff = "Signed-off-by: 张三 <contributor@users.noreply.github.com>"
-        self.assertEqual(commit.check_message(self.message(footer=signoff)), [])
+        self.assertEqual(commit.check_message(self.message(footer=self.reference + "\n" + signoff)), [])
         self.assertIn(12, {n for n, _ in commit.check_message(self.message(body="修复构建问题"))})
 
     def test_wip_prefix_checked_on_full_title(self):

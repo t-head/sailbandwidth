@@ -226,7 +226,10 @@ jobs:
   tests-gate:
     name: sailbandwidth Tests Gate
     # Add each new required job ID here. If it also runs outside PRs, add it to
-    # "Require build and test jobs to succeed" below.
+    # "Require build and test jobs to succeed" below in the unconditional
+    # group. If it is expected to be skipped outside PRs, add it there with the
+    # pull_request-guarded form instead, so the expected skip does not fail
+    # the gate.
     # New testcase commands in scripts/casecmd.list are already covered by the
     # build-test job. Only jobs listed here are checked, including all their
     # matrix entries.
@@ -261,9 +264,17 @@ jobs:
           exit 1
 
       - name: Require build and test jobs to succeed
-        # These jobs must run on PRs, pushes, and manual runs.
+        # build-test runs on PRs, pushes, and manual runs and must succeed on
+        # every event, so it belongs in the unconditional group. A job that
+        # expands or runs only on pull_request events — for example a dynamic
+        # test matrix — is expected to be skipped on push and
+        # workflow_dispatch; require such a job with the pull_request-guarded
+        # form instead of the unconditional list, so its expected skip does
+        # not fail the gate.
         if: >-
-          always() && needs.build-test.result != 'success'
+          always() && (
+            needs.build-test.result != 'success'
+          )
         run: |
           echo "::error::A required build or test job did not succeed."
           exit 1

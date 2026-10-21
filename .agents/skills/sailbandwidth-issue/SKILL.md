@@ -62,8 +62,10 @@ A `Task` issue also states:
 Create the issue on GitHub under Issues and choose the Feature, Bug, or Task form under `.github/ISSUE_TEMPLATE/`; the form sets the type and prompts for the fields above. The non-interactive command below creates the body directly and does not set the type, so set the type on the created issue afterward, or run `gh issue create` with no arguments to pick a template interactively:
 
 ```bash
-gh issue create --title "<summary>" --body-file issue.md
+gh issue create --title "<summary>" --body-file issue.md --assignee "@me"
 ```
+
+Every issue is assigned at creation to the author, the person on whose behalf the agent acts; assigning a different person is an explicit, manual adjustment. When the creating account cannot assign, leave the issue unassigned and report that a maintainer needs to assign it.
 
 Record the issue number and reference it in the pull request description as `Closes #<issue>` or `Refs #<issue>`.
 
