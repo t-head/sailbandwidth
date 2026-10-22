@@ -80,12 +80,12 @@ MultinodeMemoryAllocationUnicast::MultinodeMemoryAllocationUnicast(size_t buffer
     HG_ASSERT(hgMemSetAccess((HGdeviceptr) buffer, roundedUpAllocationSize, &desc, 1 /*count*/));
 
     // Make sure that everyone is done with mapping the fabric allocation
-    MPI_Barrier(MPI_COMM_WORLD);
+    ASSERT(MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS);
 }
 
 MultinodeMemoryAllocationUnicast::~MultinodeMemoryAllocationUnicast() {
     // Make sure that everyone is done using the memory
-    MPI_Barrier(MPI_COMM_WORLD);
+    ASSERT(MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS);
 
     HG_ASSERT(hgMemUnmap((HGdeviceptr) buffer, roundedUpAllocationSize));
     HG_ASSERT(hgMemRelease(handle));
@@ -328,7 +328,7 @@ std::vector<std::pair<int, int>> generateTestPairs(int worldSize, long long targ
         }
     }
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    ASSERT(MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS);
     pairsCalculated = true;
 
     std::vector<std::pair<int, int>> finalPairs;
@@ -417,7 +417,7 @@ MemcpyDispatchInfo NodeHelperMulti::dispatchMemcpy(const std::vector<const Memcp
         rankOfFirstMemcpy = ranksUnfiltered[0];
     }
 
-    return MemcpyDispatchInfo(p2pType, isSingleDie, contexts, srcNodes, dstNodes, ranksUnfiltered);
+    return MemcpyDispatchInfo(p2pType, gSettings.isSingleDie, contexts, srcNodes, dstNodes, ranksUnfiltered);
 }
 
 double NodeHelperMulti::calculateTotalBandwidth(double totalTime, double totalSize, size_t loopCount) {
@@ -469,7 +469,7 @@ std::vector<double> NodeHelperMulti::calculateVectorBandwidth(std::vector<double
 }
 
 void NodeHelperMulti::synchronizeProcess() {
-    MPI_Barrier(MPI_COMM_WORLD);
+    ASSERT(MPI_Barrier(MPI_COMM_WORLD) == MPI_SUCCESS);
 }
 
 HGresult NodeHelperMulti::streamSynchronizeWrapper(HGstream stream) const {

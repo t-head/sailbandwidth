@@ -46,6 +46,7 @@ extern const std::string SBW_ERROR_STATUS;
 
 class Output {
  public:
+    virtual void printHelp(const std::string& help);
     virtual void addTestcase(const std::string &name, const std::string &status, const std::string &msg = "");
 
     /*
@@ -83,7 +84,8 @@ class Output {
 
     virtual void recordWarning(const std::string &warning);
 
-    virtual void addHggcAndDriverInfo(int hggcVersion, const std::string &driverVersion);
+    virtual void addHggcAndDriverInfo(int hggcRuntimeVersion, int hggcDriverApiVersion,
+                                      const std::string &hgmlDriverVersion);
 
     virtual void addTestcaseResults(const PeerValueMatrix<double> &matrix, const std::string &description);
 
@@ -98,7 +100,7 @@ class Output {
 
     virtual void recordDevices(int deviceCount);
 
-    void listTestcases(const std::vector<Testcase*> &testcases);
+    virtual void listTestcases(const std::vector<Testcase*> &testcases);
 
     virtual ~Output() {};
 };
@@ -107,8 +109,6 @@ extern Output *output;
 
 std::string getDeviceDisplayInfo(int deviceOrdinal);
 std::string getDeviceBDF(int deviceOrdinal);
-// Local node hostname; "unknown" if unavailable.
-std::string getLocalHostname();
 
 #ifdef MULTINODE
 void exchangeDeviceInfo(int deviceCount, std::vector<char> &hostnameExchange,

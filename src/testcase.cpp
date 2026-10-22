@@ -27,7 +27,7 @@ Testcase::Testcase(std::string key, std::string desc) :
 std::string Testcase::testKey() { return key; }
 std::string Testcase::testDesc() { return desc; }
 
-bool Testcase::filterHasAccessiblePeerPairs() {
+FilterResult Testcase::filterHasAccessiblePeerPairs() {
     int deviceCount = 0;
     HG_ASSERT(hgDeviceGetCount(&deviceCount));
 
@@ -41,15 +41,15 @@ bool Testcase::filterHasAccessiblePeerPairs() {
 
             HG_ASSERT(hgDeviceCanAccessPeer(&canAccessPeer, currentDevice, peer));
             if (canAccessPeer) {
-                return true;
+                return FilterResult::pass();
             }
         }
     }
 
-    return false;
+    return FilterResult::waive("no accessible peer PPU pairs");
 }
 
-bool Testcase::filterSupportsMulticast() {
+FilterResult Testcase::filterSupportsMulticast() {
     int deviceCount = 0;
     HG_ASSERT(hgDeviceGetCount(&deviceCount));
 
@@ -60,17 +60,17 @@ bool Testcase::filterSupportsMulticast() {
 
         HG_ASSERT(hgDeviceGetAttribute(&supportsMulticast, HG_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev));
         if (!supportsMulticast) {
-            return false;
+            return FilterResult::waive("multicast is not supported");
         }
     }
 
-    return true;
+    return FilterResult::pass();
 }
 
 #ifdef MULTINODE
 // Each MPI rank handles one PPU, so we simply have to check if we have more than 1 process
-bool Testcase::filterHasMultiplePPUsMultinode() {
-    return worldSize > 1;
+FilterResult Testcase::filterHasMultiplePPUsMultinode() {
+    return worldSize > 1 ? FilterResult::pass() : FilterResult::waive("requires at least 2 MPI ranks");
 }
 #endif
 
@@ -170,7 +170,7 @@ void Testcase::allToOneHelper(unsigned long long size, MemcpyOperation &memcpyIn
             }
         }
     } else {
-        const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || disableVm;
+        const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || gSettings.disableVm;
         std::vector<MemcpyBuffer*> allSrcBuffers;
 
         for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
@@ -231,6 +231,7 @@ void Testcase::allToOneHelper(unsigned long long size, MemcpyOperation &memcpyIn
             delete node;
         }
     }
+    recordStability(bandwidthValues, memcpyInstance);
 }
 
 void Testcase::oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead) {
@@ -306,7 +307,7 @@ void Testcase::oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyIn
             }
         }
     } else {
-        const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || disableVm;
+        const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || gSettings.disableVm;
         std::vector<MemcpyBuffer*> allDstBuffers;
 
         // allocate all dst nodes up front, re-use to avoid reallocation
@@ -369,6 +370,7 @@ void Testcase::oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyIn
             delete node;
         }
     }
+    recordStability(bandwidthValues, memcpyInstance);
 }
 
 void Testcase::allHostHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost) {
@@ -403,6 +405,7 @@ void Testcase::allHostHelper(unsigned long long size, MemcpyOperation &memcpyIns
             delete node;
         }
     }
+    recordStability(bandwidthValues, memcpyInstance);
 }
 
 void Testcase::allHostBidirHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost) {
@@ -449,5 +452,6 @@ void Testcase::allHostBidirHelper(unsigned long long size, MemcpyOperation &memc
             delete node;
         }
     }
+    recordStability(bandwidthValues, memcpyInstance);
 }
 

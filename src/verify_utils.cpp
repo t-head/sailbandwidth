@@ -116,7 +116,7 @@ std::string endpointHost(const MemcpyBuffer* buf) {
         return lookupByRank(ppuHostByRank, buf->getMPIRank());
     }
 #endif
-    return getLocalHostname();
+    return env->getHostname();
 }
 
 std::ostream& field(std::ostream& os, const char* prefix, const char* label) {
@@ -188,7 +188,7 @@ void writeIdentity(std::ostream& os, const char* prefix, const MemcpyBuffer* src
     field(os, prefix, "dst") << "host=" << endpointHost(dstBuf) << "  rank=" << verifyLinkId(dstBuf)
                              << "  BDF=" << endpointBdf(dstBuf) << "\n";
 #ifdef MULTINODE
-    field(os, prefix, "reported by") << "host=" << localHostname << "  rank=" << worldRank << "\n";
+    field(os, prefix, "reported by") << "host=" << env->getHostname() << "  rank=" << worldRank << "\n";
 #endif
 }
 
@@ -488,7 +488,7 @@ void verifyReportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
                                      numElements);
     if (!path.empty()) {
 #ifdef MULTINODE
-        field(r, "  ", "dumped file") << localHostname << ":" << path
+        field(r, "  ", "dumped file") << env->getHostname() << ":" << path
                                       << " (on the reporting rank's node)\n";
 #else
         field(r, "  ", "dumped file") << path << "\n";

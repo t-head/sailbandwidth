@@ -30,8 +30,10 @@ template <class T> struct PeerValueMatrix {
     std::vector<std::string> row_labels;
     bool pFormatter;
     UnitType uType;
+    std::optional<double> coefficientOfVariation;
 
-    PeerValueMatrix(int rows, int columns, std::string key = "", bool pFormatter = perfFormatter, UnitType uType = BANDWIDTH): m_matrix(rows * columns), m_rows(rows), m_columns(columns), key(key), pFormatter(perfFormatter), uType(uType) {}
+    PeerValueMatrix(int rows, int columns, std::string key = "", bool pFormatter = gSettings.perfFormatter, UnitType uType = BANDWIDTH): m_matrix(rows * columns), m_rows(rows), m_columns(columns), key(key), pFormatter(pFormatter), uType(uType) {
+    }
 
     std::optional <T> &value(int src, int dst) {
         ASSERT(src >= 0 && src < m_rows);
@@ -110,6 +112,11 @@ std::ostream &operator<<(std::ostream &o, const PeerValueMatrix<T> &matrix) {
         o << "SUM " << matrix.key << " " << sum << std::endl;
     }
 
+    if (matrix.coefficientOfVariation &&
+        gSettings.averageLoopCount >= kMinAverageLoopCountForCV) {
+        o << "COEFFICIENT_OF_VARIATION " << matrix.key << " " << matrix.coefficientOfVariation.value() << "\n";
+    }
+
     VERBOSE << "MIN " << matrix.key << " " << (count ? minVal : 0) << '\n';
     VERBOSE << "MAX " << matrix.key << " " << (count ? maxVal : 0) << '\n';
     VERBOSE << "AVG " << matrix.key << " " << (count ? sum / count : 0) << '\n';
@@ -122,7 +129,7 @@ inline void setOptimalCpuAffinity(int hggcDeviceID) {
     // HGML doesn't support setting affinity on Windows
     return;
 #endif
-    if (disableAffinity) {
+    if (gSettings.disableAffinity) {
         return;
     }
 
