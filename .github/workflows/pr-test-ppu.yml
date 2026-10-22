@@ -60,7 +60,7 @@ jobs:
 
   # Stage 4: Build & test on PPU after all gates pass.
   build-test:
-    name: Build & Test (${{ matrix.config.name }}, ZW-890P)
+    name: Build & Test (${{ matrix.config.name }}, ${{ matrix.config.runner }})
     needs: [precheck, commit-message-check, pull-request-check, human-review]
     if: >-
       !cancelled() &&
@@ -76,10 +76,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # One entry per machine type; every machine builds and runs the same cases.
         config:
           - name: ubuntu24_hggcrt13
             image: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
             runner: ZW-M890P
+          - name: ubuntu24_cuda13_eic
+            image: pkg.flytiger-eco.com/docker_release/pytorch:sdk2.2.0-2.13.0-ubuntu24.04-cuda13.0-py312-eic-20261010
+            runner: OAM-810E
     steps:
       - uses: actions/checkout@v4
         with:
@@ -191,11 +195,13 @@ jobs:
             info = {
                 "docker_image": "${{ matrix.config.image }}",
                 "config_name": "${{ matrix.config.name }}",
+                "board_type": "${{ matrix.config.runner }}",
                 "python_version": sys.version,
                 "ppu_sdk": os.environ.get("PPU_SDK", ""),
                 "ppu_home": os.environ.get("PPU_HOME", ""),
                 "hggcc_version": command_output(["hggcc", "--version"]),
                 "hggcrt_version": command_output(["hggcrt", "--version"]),
+                "hostname": command_output(["hostname"]),
             }
             print(json.dumps(info, indent=2, sort_keys=True))
             PYEOF
@@ -207,19 +213,22 @@ jobs:
             exit "$TEST_EXIT_CODE"
           cleanup_policy: on_success
 
-      - name: Test summary
+      - name: Test summary (${{ matrix.config.runner }})
         if: always()
         shell: bash
         run: |
           NAS_RESULT_DIR="/wl_nas/devops/sailbandwidth-ci/${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.config.name }}"
           XML_FILE="$NAS_RESULT_DIR/test-results.xml"
+          ENV_FILE="$NAS_RESULT_DIR/env_info.json"
+
+          echo "## Runner: ${{ matrix.config.runner }}" >> "$GITHUB_STEP_SUMMARY"
 
           if [[ ! -f "$XML_FILE" ]]; then
             echo "JUnit report not found: $XML_FILE" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          python3 .github/workflows/scripts/display-test-summary.py "$XML_FILE"
+          python3 .github/workflows/scripts/display-test-summary.py "$XML_FILE" --env-info "$ENV_FILE"
 
   # Single stable required check for branch rules: passes only when every job
   # in needs succeeded (and actually ran, on pull requests).
