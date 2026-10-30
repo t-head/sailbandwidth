@@ -61,8 +61,8 @@ The executable is produced at `build/sailbandwidth`.
 
 The following are commonly used build options. For the complete list, see [`build.sh`](build.sh).
 
-- `--use_mpi` — build the multinode version. MPI is required, and only builds configured with this
-  option contain the `multinode` testcases.
+- `--use_mpi` — build the multinode version. MPI is required; `multinode` testcases are registered
+  only when the executable runs with more than one MPI process.
 - `--ppu_archs <archs>` — target PPU architectures: `ppu_10`, `ppu_15`, or both (the default).
   Restricting this to the architecture of the target machine shortens the build.
 - `--rebuild` — remove the `build` directory and configure from scratch. Required when switching
@@ -114,7 +114,8 @@ Run all testcases, a specific one by name or index, or a group by prefix:
 ./build/sailbandwidth                                     # run all testcases
 ./build/sailbandwidth -l                                  # list available testcases
 ./build/sailbandwidth -t device_to_device_memcpy_read_ce  # run one testcase
-./build/sailbandwidth -p multinode                        # run all testcases with a prefix
+mpirun -np 2 ./build/sailbandwidth -p multinode           # run all testcases with a prefix
+mpirun -np 2 ./build/sailbandwidth -l                     # MPI build: list testcases, including multinode
 ```
 
 ### General options
@@ -126,6 +127,7 @@ options; additional advanced options are defined in
 | Option | Default | Description |
 |---|---|---|
 | `-h, --help` | – | Show the help message |
+| `--version` | – | Print sailbandwidth release version, HGGC build driver API version, and HGGC SDK version |
 | `-b, --bufferSize <MiB>` | 512 | Copy buffer size in MiB |
 | `-l, --list` | – | List available testcases |
 | `-t, --testcase <id>` | – | Run specific testcase(s), by name or index |
@@ -135,7 +137,17 @@ options; additional advanced options are defined in
 | `-d, --disableAffinity` | off | Disable automatic CPU affinity control |
 | `-i, --testSamples <n>` | 3 | Benchmark iterations per testcase |
 | `-m, --useMean` | off | Report the mean instead of the median |
-| `-P, --targetNumPairs <n>` | -1 | Target number of rank pairs sampled for multinode tests; `-1` tests all pairs |
+| `-P, --targetNumPairs <n>` | -1 | Target number of rank pairs sampled for multinode device-to-device pair tests; `-1` tests all pairs. Pairs run in rank order when omitted, or shuffled order when explicitly specified |
+| `-F, --format <format>` | text | Output format: text, json, or perf |
+
+- The coefficient of variation (CV) describes run-to-run variation; lower values indicate more
+  stable measurements. It is reported only on paths that record it and have enough samples, not
+  for every testcase.
+- `Waived` means a testcase was skipped because its requirements were not met; the reason is
+  included. It is not a test failure.
+- `-F perf` produces machine-readable output containing measurement results and status markers.
+  `PPU<i>/PPU<j>` encode matrix row and column indices; interpret their host, device, or rank
+  meaning according to the testcase.
 
 Example output (`device_to_device_memcpy_write_ce`, bandwidth in GB/s; the diagonal is `N/A`):
 
@@ -169,7 +181,7 @@ The following are the most commonly used options controlling PPU-specific copy b
 | `--nBlocks <n>` | -1 (auto) | Block count for the SM bulk-copy kernel |
 | `--nThreads <n>` | -1 (auto) | Thread count for the SM bulk-copy kernel |
 | `--displayUR` | off | Print bandwidth utilization-ratio matrices for D2D testcases |
-| `--enableSplitSizeReadOptimize` | off | Split CE read commands across ICN links in `all_to_one_read_ce` and `one_to_all_read_ce` |
+| `--enableSplitSizeReadOptimize` | on | Split CE read commands across ICN links in `all_to_one_read_ce` and `one_to_all_read_ce` |
 
 ### Data verification and fault injection
 

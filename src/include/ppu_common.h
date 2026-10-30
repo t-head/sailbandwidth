@@ -67,12 +67,14 @@
 #define PPU_DIE1_DMA_RING_ID_BASE (PPU_DMA_RING() / 2)
 
 #define GET_ICN_LINK_NUMBER() \
-    ((vpipeIdForDie0 >= 0) ? (vpipeIdForDie0) : \
-     (vpipeIdForDie1 >= 0) ? (vpipeIdForDie1 + (PPU_ICN_LINK_PER_DIE())) : \
-                             (linkId))
+    ((gSettings.vpipeIdForDie0 >= 0) ? (gSettings.vpipeIdForDie0) : \
+     (gSettings.vpipeIdForDie1 >= 0) ? (gSettings.vpipeIdForDie1 + (PPU_ICN_LINK_PER_DIE())) : \
+                             (gSettings.linkId))
 
 #define ADJUST_SM_COUNT_FOR_SINGLE_DIE(nBlocks) \
-    do { if (sm >= 89 && isSingleDie) (nBlocks) = ((nBlocks) / 2 > 0) ? (nBlocks) / 2 : 1; } while(0)
+    do { \
+        if (sm >= 89 && gSettings.isSingleDie) (nBlocks) = ((nBlocks) / 2 > 0) ? (nBlocks) / 2 : 1; \
+    } while(0)
 
 
 extern bool ppuVpipeIdEnable;

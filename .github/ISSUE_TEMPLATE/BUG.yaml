@@ -42,7 +42,7 @@ body:
     id: version
     attributes:
       label: sailbandwidth version or commit
-      description: The version from src/include/version.h, or the commit for a source build.
+      description: The version reported by ./build/sailbandwidth --version, or the commit for a source build.
       placeholder: "e.g. v2.2.1"
     validations:
       required: true

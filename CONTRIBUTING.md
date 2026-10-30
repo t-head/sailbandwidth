@@ -26,7 +26,7 @@ The following changes are discussed in an issue before a pull request is opened:
 - **Workarounds for external issues**: Changes that work around SDK or driver behavior. These changes require a description of the root cause and the affected versions.
 - **Incomplete implementations**: Partially supported features remain unregistered or filtered until they are complete.
 - **Check-in configuration**: The check-in workflow and checker files under `.github/workflows/` are not changed unless necessary. Such a change requires maintainer confirmation before it is proposed; whether these files may change is a maintainer review decision and is not enforced by the prechecks.
-- **Version changes**: The version in `src/include/version.h` is upgraded only by maintainers as part of a release. A pull request by a non-maintainer does not change the version; this restriction is review guidance and is not enforced by the prechecks.
+- **Version changes**: The version defined by `project(... VERSION ...)` in `CMakeLists.txt` is upgraded only by maintainers as part of a release. A pull request by a non-maintainer does not change the version; this restriction is review guidance and is not enforced by the prechecks.
 
 ## New Testcases and Features
 

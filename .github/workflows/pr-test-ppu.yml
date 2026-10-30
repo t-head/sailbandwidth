@@ -194,8 +194,7 @@ jobs:
                 "python_version": sys.version,
                 "ppu_sdk": os.environ.get("PPU_SDK", ""),
                 "ppu_home": os.environ.get("PPU_HOME", ""),
-                "hggcc_version": command_output(["hggcc", "--version"]),
-                "hggcrt_version": command_output(["hggcrt", "--version"]),
+                "hgcc_version": command_output(["hgcc", "--version"]),
             }
             print(json.dumps(info, indent=2, sort_keys=True))
             PYEOF

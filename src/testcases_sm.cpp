@@ -23,7 +23,7 @@
 #include "output.h"
 
 void HostDeviceLatencySM::run(unsigned long long size, unsigned long long loopCount) {
-    PeerValueMatrix<double> latencyValues(1, deviceCount, key, perfFormatter, LATENCY);
+    PeerValueMatrix<double> latencyValues(1, deviceCount, key, gSettings.perfFormatter, LATENCY);
     MemPtrChaseOperation ptrChaseOp(latencyMemAccessCnt);
 
     for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
@@ -46,6 +46,7 @@ void HostToDeviceSM::run(unsigned long long size, unsigned long long loopCount) 
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(hostBuffer, deviceBuffer);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM CPU(row) -> PPU(column) bandwidth (GB/s)");
 }
 
@@ -60,6 +61,7 @@ void DeviceToHostSM::run(unsigned long long size, unsigned long long loopCount) 
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(deviceBuffer, hostBuffer);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM CPU(row) <- PPU(column) bandwidth (GB/s)");
 }
 
@@ -74,6 +76,7 @@ void HostToDeviceBidirSM::run(unsigned long long size, unsigned long long loopCo
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(hostBuffer, deviceBuffer);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM CPU(row) <-> PPU(column) bandwidth (GB/s)");
 }
 
@@ -88,6 +91,7 @@ void DeviceToHostBidirSM::run(unsigned long long size, unsigned long long loopCo
         bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(hostBuffer, deviceBuffer);
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM CPU(row) <-> PPU(column) bandwidth (GB/s)");
 }
 
@@ -98,7 +102,7 @@ void DeviceToDeviceReadSM::run(unsigned long long size, unsigned long long loopC
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -116,12 +120,13 @@ void DeviceToDeviceReadSM::run(unsigned long long size, unsigned long long loopC
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) -> PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, false, "memcpy SM PPU(row) -> PPU(column)");
 }
 
 void DeviceToDeviceLatencySM::run(unsigned long long size, unsigned long long loopCount) {
-    PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key, perfFormatter, LATENCY);
+    PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key, gSettings.perfFormatter, LATENCY);
     MemPtrChaseOperation ptrChaseOp(latencyMemAccessCnt);
 
     for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
@@ -129,7 +134,7 @@ void DeviceToDeviceLatencySM::run(unsigned long long size, unsigned long long lo
         latencyHelper(peerBuffer, true);
 
         for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -154,7 +159,7 @@ void DeviceToDeviceWriteSM::run(unsigned long long size, unsigned long long loop
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -171,6 +176,7 @@ void DeviceToDeviceWriteSM::run(unsigned long long size, unsigned long long loop
         }
     }
 
+    recordStability(bandwidthValues, memcpyInstance);
     output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) <- PPU(column) bandwidth (GB/s)");
     output->displayUtilizationRatioMatrix(bandwidthValues, false, "memcpy SM PPU(row) <- PPU(column)");
 }
@@ -185,7 +191,7 @@ void DeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned long long 
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -209,6 +215,7 @@ void DeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned long long 
         }
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesRead1, "memcpy SM PPU(row) <-> PPU(column) Read1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesRead2, "memcpy SM PPU(row) <-> PPU(column) Read2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy SM PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
@@ -225,7 +232,7 @@ void DeviceToDeviceBidirWriteSM::run(unsigned long long size, unsigned long long
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -249,6 +256,7 @@ void DeviceToDeviceBidirWriteSM::run(unsigned long long size, unsigned long long
         }
     }
 
+    recordStability(bandwidthValuesTotal, memcpyInstance);
     output->addTestcaseResults(bandwidthValuesWrite1, "memcpy SM PPU(row) <-> PPU(column) Write1 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesWrite2, "memcpy SM PPU(row) <-> PPU(column) Write2 bandwidth (GB/s)");
     output->addTestcaseResults(bandwidthValuesTotal, "memcpy SM PPU(row) <-> PPU(column) Total bandwidth (GB/s)");

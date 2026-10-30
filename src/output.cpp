@@ -18,7 +18,7 @@
 
 #include "inline_common.h"
 #include "output.h"
-#include "version.h"
+#include "sailbandwidth_version.h"
 
 #include <cctype>
 #include <math.h>
@@ -31,7 +31,7 @@
 
 void Output::addVersionInfo() {
     OUTPUT << "sailbandwidth Version: " << SAILBANDWIDTH_VERSION << std::endl;
-    // OUTPUT << "Built from Git version: " << GIT_VERSION << std::endl << std::endl;
+    OUTPUT << "HGGC Build Driver API Version: " << HGGC_VERSION << std::endl;
 
 #ifdef MULTINODE
     char MPIVersion[MPI_MAX_LIBRARY_VERSION_STRING];
@@ -47,10 +47,17 @@ void Output::printInfo() {
            << "Performance can vary with software drivers, hardware clocks, and system topology." << std::endl << std::endl;
 }
 
-void Output::addHggcAndDriverInfo(int hggcVersion, const std::string &driverVersion) {
-    OUTPUT << "HGGC Runtime Version: " << hggcVersion << std::endl;
-    OUTPUT << "HGGC Driver Version: " << hggcVersion << std::endl;
-    OUTPUT << "Driver Version: " << driverVersion << std::endl << std::endl;
+void Output::addSdkVersion(const std::string &sdkVersion) {
+    OUTPUT << "HGGC SDK Version: " << sdkVersion << std::endl;
+}
+
+void Output::addHggcAndDriverInfo(int hggcDriverApiVersion,
+                                  const std::string &hgmlDriverVersion,
+                                  const std::string &sdkVersion) {
+    OUTPUT << "HGGC Driver API Version: " << hggcDriverApiVersion << std::endl;
+    OUTPUT << "Driver Version: " << hgmlDriverVersion << std::endl;
+    addSdkVersion(sdkVersion);
+    OUTPUT << std::endl;
 }
 
 void Output::recordError(const std::string &error) {
@@ -73,8 +80,8 @@ void Output::listTestcases(const std::vector<Testcase*> &testcases) {
     size_t numTestcases = testcases.size();
     OUTPUT << "Index, Name:\n\tDescription\n";
     OUTPUT << "=======================\n";
-    for (unsigned int i = 0; i < numTestcases; i++) {
-        OUTPUT << i << ", " << testcases.at(i)->testKey() << ":\n" << testcases.at(i)->testDesc() << "\n\n";
+    for (size_t i = 0; i < numTestcases; i++) {
+        OUTPUT << i << ", " << testcases[i]->testKey() << ":\n" << testcases[i]->testDesc() << "\n\n";
     }
 }
 
@@ -100,7 +107,7 @@ std::string getDeviceDisplayInfo(int deviceOrdinal) {
     char name[STRING_LENGTH];
 
     HG_ASSERT(hgDeviceGet(&dev, deviceOrdinal));
-    HG_ASSERT(hgDeviceGetName(name, STRING_LENGTH, dev));
+    HG_ASSERT(hgDeviceGetName(name, sizeof(name), dev));
     return std::string(name) + " (" + getDevicePciTriple(deviceOrdinal) + ")";
 }
 
@@ -111,14 +118,6 @@ std::string getDeviceBDF(int deviceOrdinal) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
     return bdf + ".0";
-}
-
-std::string getLocalHostname() {
-    char name[STRING_LENGTH] = {0};
-    if (gethostname(name, sizeof(name) - 1) != 0) {
-        return "unknown";
-    }
-    return std::string(name);
 }
 
 #ifdef MULTINODE
@@ -132,16 +131,10 @@ void exchangeDeviceInfo(int deviceCount, std::vector<char> &hostnameExchange,
                         std::vector<char> &deviceNameExchange,
                         std::vector<int> &localDeviceIdExchange) {
     // Exchange hostnames
-    MPI_Allgather(localHostname, STRING_LENGTH, MPI_BYTE, hostnameExchange.data(),
+    std::string localHost = env->getHostname();
+    localHost.resize(STRING_LENGTH);
+    MPI_Allgather(localHost.data(), STRING_LENGTH, MPI_BYTE, hostnameExchange.data(),
                   STRING_LENGTH, MPI_BYTE, MPI_COMM_WORLD);
-
-    // localRank is the number of lower world ranks running on the same host.
-    localRank = 0;
-    for (int i = 0; i < worldRank; i++) {
-        if (strncmp(localHostname, &hostnameExchange[i * STRING_LENGTH], STRING_LENGTH) == 0) {
-            localRank++;
-        }
-    }
 
     std::vector<int> deviceCountExchange(worldSize);
     MPI_Allgather(&deviceCount, 1, MPI_INT, deviceCountExchange.data(), 1, MPI_INT, MPI_COMM_WORLD);
@@ -196,14 +189,15 @@ static void printPPUsMultinode(int deviceCount) {
     // Print gathered info
     for (int i = 0; i < worldSize; i++) {
         char *deviceName = &deviceNameExchange[i * STRING_LENGTH];
-        OUTPUT << "Process " << getPaddedProcessId(i) << " (" << &hostnameExchange[i * STRING_LENGTH] << "): device " << localDeviceIdExchange[i] << ": " << deviceName << std::endl;
+        OUTPUT << "Process " << getPaddedProcessId(i) << " (" << &hostnameExchange[i * STRING_LENGTH] << "): device "
+               << localDeviceIdExchange[i] << ": " << deviceName << std::endl;
     }
     OUTPUT << std::endl;
 }
 #endif
 
 static void printPPUs() {
-    OUTPUT << localHostname << std::endl;
+    OUTPUT << env->getHostname() << std::endl;
     for (int iDev = 0; iDev < deviceCount; iDev++) {
         OUTPUT << "Device " << iDev << ": " << getDeviceDisplayInfo(iDev) << std::endl;
     }
@@ -240,7 +234,7 @@ void Output::displayUtilizationRatioMatrix(const PeerValueMatrix<double> &bandwi
                                            bool isMultiTest,
                                            const std::string &prefix,
                                            const std::string &suffix) {
-    if (displayUR) {
+    if (gSettings.displayUR) {
         PeerValueMatrix<double> bandwidthURValues(bandwidthValues.m_rows,
                                                   bandwidthValues.m_columns,
                                                   bandwidthValues.key);
@@ -249,7 +243,7 @@ void Output::displayUtilizationRatioMatrix(const PeerValueMatrix<double> &bandwi
         } else {
             // output->recordWarning("Failed to get singleDieMinPath. The icnlink number is set as 1 by default.");
             WARN("Unable to display Bandwidth Utilization Ratio Matrix.");
-            displayUR = false;
+            gSettings.displayUR = false;
         }
     }
 }
@@ -272,4 +266,8 @@ void RecordError(const std::stringstream &errmsg) {
 
 void RecordWarning(const std::stringstream &warnmsg) {
     output->recordWarning(warnmsg.str());
+}
+
+void Output::printHelp(const std::string& help) {
+    OUTPUT << help << "\n";
 }

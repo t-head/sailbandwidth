@@ -45,7 +45,7 @@ The acceptance criteria must describe the same tests that the `Validation` secti
 
 A `Bug` issue also states:
 
-3. **Version**: the sailbandwidth version from `src/include/version.h`, or the commit for a source build.
+3. **Version**: the sailbandwidth version reported by `./build/sailbandwidth --version`, or the commit for a source build.
 4. **Environment**: the T-Head SAIL SDK version, the OS, the PPU model, the node count, and the PPUs per node.
 5. **Reproduction**: the command, testcase, message sizes, environment variables, and how often it fails.
 6. **Expected and actual behavior**: what should happen, what happened, and the first error or warning.

@@ -67,7 +67,7 @@ void setCUMask(int dev, const void* func) {
         constexpr uint64_t kCUDispatchMaskL = 0x00000000000FFFFF;
         constexpr uint64_t kCUDispatchMaskH = 0x000FFFFF00000000;
         ppuDispatchMask_105 cuMask = {0};
-        if (isSingleDie) {
+        if (gSettings.isSingleDie) {
             cuMask.cu_mask = kCUDispatchMaskL;
         } else {
             cuMask.cu_mask = kCUDispatchMaskH | kCUDispatchMaskL;
@@ -87,7 +87,7 @@ void setCUMask(int dev, const void* func) {
 
 bool getIcnTotalBW(int srcDev, int dstDev, std::string key, int *icnTotalBW, bool isMultiTest) {
     unsigned int icnSpeed = 50;
-    const int nDies = (sm < 89 || isSingleDie) ? 1 : 2;
+    const int nDies = (sm < 89 || gSettings.isSingleDie) ? 1 : 2;
     int minPath = nDies;
     const int minPathEnum = 256;
     const int maxIcnLinks = PPU_ICN_LINK();
@@ -110,7 +110,7 @@ bool getIcnTotalBW(int srcDev, int dstDev, std::string key, int *icnTotalBW, boo
         }
     }
 
-    if (key.find("read_ce") == std::string::npos || disableVm) {
+    if (key.find("read_ce") == std::string::npos || gSettings.disableVm) {
         if (isMultiTest) {
             int activeLinkNum = 0;
             for (int curLink = 0; curLink < maxIcnLinks; curLink++) {

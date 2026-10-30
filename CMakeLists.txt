@@ -27,12 +27,19 @@ message(STATUS "PPU_ARCHS=${PPU_ARCHS}")
 set(CMAKE_C_COMPILER ${SDK_PATH}/bin/hgcc)
 set(CMAKE_CXX_COMPILER ${SDK_PATH}/bin/hgcc)
 
-set(USE_VPIPEID FALSE CACHE BOOL "Enable USE_VPIPEID compile macro")
+set(USE_VPIPEID TRUE CACHE BOOL "Enable USE_VPIPEID compile macro")
 message(STATUS "USE_VPIPEID=${USE_VPIPEID}")
 
 set(CMAKE_SKIP_BUILD_RPATH TRUE)
 
-project(sailbandwidth LANGUAGES C CXX)
+project(sailbandwidth
+    VERSION 2.2.1
+    LANGUAGES C CXX)
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include/sailbandwidth_version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/sailbandwidth_version.h
+    @ONLY)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,8 +62,11 @@ set(src
     src/sailbandwidth.cpp
     src/multinode_memcpy.cpp
     src/multinode_testcases.cpp
+    src/environment.cpp
+    src/hggc_version_check.cpp
     src/output.cpp
     src/json_output.cpp
+    src/perf_parser_output.cpp
     json/jsoncpp.cpp
 )
 set_source_files_properties(src/kernels.cu PROPERTIES LANGUAGE CXX)
@@ -64,7 +74,7 @@ set_source_files_properties(src/kernels.cu PROPERTIES LANGUAGE CXX)
 add_executable(sailbandwidth ${src})
 
 set(HGGC_INC ${SDK_PATH}/include)
-set(HGGC_LIB hg_wrapper)
+set(HGGC_LIB hg_wrapper hggc)
 set(HGGCRT_LIB hggc_wrapper)
 find_library(HGML_LIB hgml PATHS ${SDK_PATH}/lib NO_DEFAULT_PATH REQUIRED)
 
@@ -90,7 +100,9 @@ endif()
 list(APPEND PPU_FLAGS -I${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 list(APPEND PPU_FLAGS -I${HGGC_INC})
 
-target_include_directories(sailbandwidth PRIVATE . src src/include ${HGGC_INC})
+target_include_directories(sailbandwidth PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}
+    . src src/include ${HGGC_INC})
 target_compile_options(sailbandwidth PRIVATE
     ${PPU_FLAGS}
     -Xcompiler=-Wall
