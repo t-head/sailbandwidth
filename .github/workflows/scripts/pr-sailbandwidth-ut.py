@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Run sailbandwidth PR test cases from a caselist and emit a JUnit XML report.
 
-Adapted from DeepGEMM-for-sail .github/workflows/scripts/pr-deepgemm-ut.py.
-
 Each non-empty, non-comment line in the caselist is executed as a shell
 command (relative paths resolve against the repository root).
 """
