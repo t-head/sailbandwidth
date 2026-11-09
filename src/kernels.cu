@@ -834,6 +834,206 @@ HGresult multicastMemcmpKernel(HGstream stream, HGdeviceptr buffer, HGdeviceptr 
     return HGGC_SUCCESS;
 }
 
+__device__ __forceinline__ void accumulateReadErrors(uint4& errors, const uint4& value, unsigned int index) {
+    errors.x |= value.x ^ index;
+    errors.y |= value.y ^ (index + 0x12345678u);
+    errors.z |= value.z ^ (index + 0xABCDEF01u);
+    errors.w |= value.w ^ (index + 0xDEADBEEFu);
+}
+
+// Read-only kernel - retains mismatched bits across all timed reads without cancellation.
+__global__ void stridingReadOnlyKernel(unsigned int totalThreadCount, unsigned long long loopCount, uint4* src, size_t chunkSizeInElement, uint4* verifyOut) {
+    unsigned long long from = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned long long bigChunkSizeInElement = chunkSizeInElement / 12;
+    src += from;
+    uint4* srcBigEnd = src + (bigChunkSizeInElement * 12) * totalThreadCount;
+    uint4* srcEnd = src + chunkSizeInElement * totalThreadCount;
+
+    uint4 errors = make_uint4(0, 0, 0, 0);
+
+    for (unsigned long long i = 0; i < loopCount; i++) {
+        uint4* csrc = src;
+        unsigned int index = static_cast<unsigned int>(from);
+
+        while (csrc < srcBigEnd) {
+            uint4 pipe_0 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_1 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_2 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_3 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_4 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_5 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_6 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_7 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_8 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_9 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_10 = __ldcg(csrc); csrc += totalThreadCount;
+            uint4 pipe_11 = __ldcg(csrc); csrc += totalThreadCount;
+
+            // Consume all four components to prevent hgcc register reuse from serializing PPU loads.
+            accumulateReadErrors(errors, pipe_0, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_1, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_2, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_3, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_4, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_5, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_6, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_7, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_8, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_9, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_10, index); index += totalThreadCount;
+            accumulateReadErrors(errors, pipe_11, index); index += totalThreadCount;
+        }
+
+        while (csrc < srcEnd) {
+            uint4 val = *csrc;
+            csrc += totalThreadCount;
+            accumulateReadErrors(errors, val, index);
+            index += totalThreadCount;
+        }
+    }
+
+    if (verifyOut) {
+        // All-one match masks distinguish success from an unwritten or zeroed result.
+        verifyOut[from] = make_uint4(~errors.x, ~errors.y, ~errors.z, ~errors.w);
+    }
+}
+
+// Write-only kernel - only writes to destination buffer, no reads
+__global__ void stridingWriteOnlyKernel(unsigned int totalThreadCount, unsigned long long loopCount, uint4* __restrict__ dst, size_t chunkSizeInElement) {
+    unsigned long long from = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned long long bigChunkSizeInElement = chunkSizeInElement / 12;
+    dst += from;
+    uint4* dstBigEnd = dst + (bigChunkSizeInElement * 12) * totalThreadCount;
+    uint4* dstEnd = dst + chunkSizeInElement * totalThreadCount;
+
+    for (unsigned long long i = 0; i < loopCount; i++) {
+        uint4* cdst = dst;
+        // Include loop iteration in pattern to verify all iterations completed
+        uint4 pattern = make_uint4(threadIdx.x, blockIdx.x, i, 0xCAFEBABE);
+
+        while (cdst < dstBigEnd) {
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+            __stcg(cdst, pattern); cdst += totalThreadCount;
+        }
+
+        while (cdst < dstEnd) {
+            __stcg(cdst, pattern);
+            cdst += totalThreadCount;
+        }
+    }
+}
+
+// Verification kernel for write-only test - checks pattern in parallel
+__global__ void verifyWritePattern(uint4* dst, size_t numElements, unsigned int numThreadPerBlock,
+                                    unsigned int expectedIteration, unsigned int* errorCount,
+                                    unsigned int totalThreadCount) {
+    unsigned long long idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned long long stride = blockDim.x * gridDim.x;
+
+    for (unsigned long long i = idx; i < numElements; i += stride) {
+        uint4 val = dst[i];
+
+        // The write kernel uses strided access: each thread writes to positions offset by totalThreadCount
+        // So element at position i was written by thread with globalThreadId = i % totalThreadCount
+        unsigned int writingGlobalThreadId = i % totalThreadCount;
+        unsigned int expectedThreadIdx = writingGlobalThreadId % numThreadPerBlock;
+        unsigned int expectedBlockIdx = writingGlobalThreadId / numThreadPerBlock;
+
+        if (val.x != expectedThreadIdx ||
+            val.y != expectedBlockIdx ||
+            val.z != expectedIteration ||
+            val.w != 0xCAFEBABE) {
+            atomicAdd(errorCount, 1);
+        }
+    }
+}
+
+size_t readOnlyKernel(MemcpyDescriptor& desc, HGdeviceptr verificationBuffer) {
+    HGdevice dev;
+    HGcontext ctx;
+    HG_ASSERT(hgStreamGetCtx(desc.mainstream, &ctx));
+    HG_ASSERT(hgCtxGetDevice(&dev));
+
+    int numSm;
+    HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+    ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+    unsigned int totalThreadCount = numSm * numThreadPerBlock;
+    size_t sizeInElement = desc.copySize / sizeof(uint4);
+    sizeInElement = totalThreadCount * (sizeInElement / totalThreadCount);
+
+    size_t chunkSizeInElement = sizeInElement / totalThreadCount;
+
+    dim3 gridDim(numSm, 1, 1);
+    dim3 blockDim(numThreadPerBlock, 1, 1);
+
+    uint4* verificationOut = reinterpret_cast<uint4*>(verificationBuffer);
+    setCUMask(dev, reinterpret_cast<const void *>(stridingReadOnlyKernel));
+    stridingReadOnlyKernel<<<gridDim, blockDim, 0, desc.mainstream>>> (totalThreadCount, desc.loopCount, (uint4 *)desc.srcBuffer->getBuffer(), chunkSizeInElement, verificationOut);
+
+    HGGC_ASSERT(hggcGetLastError());
+    return sizeInElement * sizeof(uint4);
+}
+
+size_t writeOnlyKernel(MemcpyDescriptor& desc) {
+    HGdevice dev;
+    HGcontext ctx;
+    HG_ASSERT(hgStreamGetCtx(desc.mainstream, &ctx));
+    HG_ASSERT(hgCtxGetDevice(&dev));
+
+    int numSm;
+    HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+    ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+    unsigned int totalThreadCount = numSm * numThreadPerBlock;
+    size_t sizeInElement = desc.copySize / sizeof(uint4);
+    sizeInElement = totalThreadCount * (sizeInElement / totalThreadCount);
+    size_t chunkSizeInElement = sizeInElement / totalThreadCount;
+
+    dim3 gridDim(numSm, 1, 1);
+    dim3 blockDim(numThreadPerBlock, 1, 1);
+    setCUMask(dev, reinterpret_cast<const void *>(stridingWriteOnlyKernel));
+    stridingWriteOnlyKernel<<<gridDim, blockDim, 0, desc.mainstream>>> (totalThreadCount, desc.loopCount, (uint4 *)desc.dstBuffer->getBuffer(), chunkSizeInElement);
+
+    HGGC_ASSERT(hggcGetLastError());
+    return sizeInElement * sizeof(uint4);
+}
+
+HGresult verifyWriteOnlyKernel(HGstream stream, HGdeviceptr dstBuffer, size_t numElements,
+                                unsigned int numThreadPerBlock, unsigned int expectedIteration,
+                                HGdeviceptr d_errorCount) {
+    HGdevice dev;
+    HGcontext ctx;
+    HG_ASSERT(hgStreamGetCtx(stream, &ctx));
+    HG_ASSERT(hgCtxGetDevice(&dev));
+
+    int numSm;
+    HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+    ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+    unsigned int totalThreadCount = numSm * numThreadPerBlock;
+    dim3 gridDim(numSm * 4, 1, 1);
+    dim3 blockDim(numThreadPerBlock, 1, 1);
+    setCUMask(dev, reinterpret_cast<const void *>(verifyWritePattern));
+    verifyWritePattern<<<gridDim, blockDim, 0, stream>>>(
+        (uint4*)dstBuffer,
+        numElements,
+        numThreadPerBlock,
+        expectedIteration,
+        (unsigned int*)d_errorCount,
+        totalThreadCount);
+
+    HGGC_ASSERT(hggcGetLastError());
+    return HGGC_SUCCESS;
+}
+
 void preloadKernels(int deviceCount) {
     hggcFuncAttributes unused;
 #ifdef MULTINODE
@@ -855,6 +1055,9 @@ void preloadKernels(int deviceCount) {
         hggcFuncGetAttributes(&unused, &ptrChasingKernel);
         hggcFuncGetAttributes(&unused, &multicastCopyKernel);
         hggcFuncGetAttributes(&unused, &memsetKernelDevice);
+        hggcFuncGetAttributes(&unused, &stridingReadOnlyKernel);
+        hggcFuncGetAttributes(&unused, &stridingWriteOnlyKernel);
+        hggcFuncGetAttributes(&unused, &verifyWritePattern);
         hggcFuncGetAttributes(&unused, &memclearKernelByWarpParityDevice);
         hggcFuncGetAttributes(&unused, &memcmpKernelDevice);
         hggcFuncGetAttributes(&unused, &multicastMemcmpKernelDevice);

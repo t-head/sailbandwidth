@@ -167,6 +167,43 @@ inline bool isMemoryOwnedByHGGC(void *memory) {
     }
 }
 
+inline std::string getDeviceUuidString(int deviceOrdinal) {
+    HGdevice dev;
+    HGuuid dev_uuid;
+    HG_ASSERT(hgDeviceGet(&dev, deviceOrdinal));
+    HG_ASSERT(hgDeviceGetUuid(&dev_uuid, dev));
+    static constexpr bool kDashBefore[16] = {1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0};
+    std::stringstream s;
+    s << "GPU";
+    for (int i = 0; i < 16; i++) {
+        if (kDashBefore[i]) s << '-';
+        s << std::hex << std::setfill('0') << std::setw(2) << (0xFF & (int)dev_uuid.bytes[i]);
+    }
+    return s.str();
+}
+
+inline std::string normalizeUuidString(const std::string& u) {
+    std::size_t start = 0;
+    if (u.size() >= 4 &&
+        (std::tolower((unsigned char)u[0]) == 'p' || std::tolower((unsigned char)u[0]) == 'g') &&
+        std::tolower((unsigned char)u[1]) == 'p' &&
+        std::tolower((unsigned char)u[2]) == 'u' && u[3] == '-') {
+        start = 4;
+    }
+    std::string out(u, start);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return out;
+}
+
+inline int getDeviceIndexByUuid(const std::string& uuid, int deviceCount) {
+    std::string want = normalizeUuidString(uuid);
+    for (int i = 0; i < deviceCount; i++) {
+        if (normalizeUuidString(getDeviceUuidString(i)) == want) return i;
+    }
+    return -1;
+}
+
 inline bool computeUR(const PeerValueMatrix<double> &bandwidthValues, PeerValueMatrix<double> &bandwidthURValues, bool isMultiTest)
 {
     for (int r = 0; r < bandwidthURValues.m_rows; ++r) {

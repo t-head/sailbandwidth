@@ -23,6 +23,7 @@
 
 #include "environment.h"
 #include "hggc_version_check.h"
+#include "inline_common.h"
 #include "json_output.h"
 #include "perf_parser_output.h"
 #include "kernels.cuh"
@@ -32,6 +33,8 @@
 #include "sailbandwidth_version.h"
 
 TestSettings gSettings;
+std::string ppuPairUuid0, ppuPairUuid1;
+int ppuPairDev0 = -1, ppuPairDev1 = -1;
 
 int sm;
 int deviceCount;
@@ -110,6 +113,11 @@ std::vector<Testcase*> createNodeTestcases() {
         });
     }
 #endif
+    tests.insert(tests.end(), {
+        new DeviceLocalCopySM(),
+        new DeviceLocalReadSM(),
+        new DeviceLocalWriteSM(),
+    });
     return tests;
 }
 
@@ -136,6 +144,37 @@ Testcase* findTestcase(std::vector<Testcase*> &testcases, std::string id) {
         if (index < 0 || index >= static_cast<long>(testcases.size())) throw "Testcase index " + id + " out of bound!";
         return testcases.at(index);
     }
+}
+
+// Testcases whose device-to-device sweep is restricted (single-node) or PPU-bound (multinode) by --pair.
+static bool testcaseKeyUsesPpuPairSelection(const std::string &k) {
+    if (k == "device_to_device_latency_sm" || k == "device_to_device_latency_tma") return true;
+    static const char *const prefixes[] = {
+        "device_to_device_memcpy_",
+        "device_to_device_bidirectional_memcpy_",
+        "multinode_device_to_device_memcpy_",
+        "multinode_device_to_device_bidirectional_memcpy_",
+    };
+    for (const char *pre : prefixes) {
+        if (k.rfind(pre, 0) == 0) return true;
+    }
+    return false;
+}
+
+static bool selectedTestcasesIncludePpuPairRelevant(std::vector<Testcase *> &testcases,
+                                                    const std::vector<std::string> &testcasesToRun) {
+    if (testcasesToRun.empty()) {
+        return true;
+    }
+    for (const std::string &id : testcasesToRun) {
+        try {
+            Testcase *t = findTestcase(testcases, id);
+            if (testcaseKeyUsesPpuPairSelection(t->testKey())) return true;
+        } catch (const std::string &) {
+            continue;
+        }
+    }
+    return false;
 }
 
 std::vector<std::string> expandTestcases(std::vector<Testcase*> &testcases, std::vector<std::string> prefixes) {
@@ -265,7 +304,7 @@ int main(int argc, char **argv) {
     formatParser.add_argument("-j", "--json").store_into(legacyJson).append();
     formatParser.add_argument("-F", "--format").nargs(argparse::nargs_pattern::optional)
         .store_into(requestedFormat).append();
-    formatParser.add_argument("-h", "-l", "-v", "-s", "-d", "-m").flag().append();
+    formatParser.add_argument("-h", "-l", "-v", "-s", "-d", "-m", "-H").flag().append();
     formatParser.add_argument("-b", "-i", "-P").nargs(argparse::nargs_pattern::optional).append();
     formatParser.add_argument("-t", "-p").nargs(argparse::nargs_pattern::any).append();
     std::vector<std::string> formatArgs(argv, argv + argc);
@@ -328,6 +367,13 @@ int main(int argc, char **argv) {
     program.add_argument("-P", "--targetNumPairs")
         .help("Target pairs for multinode device-to-device pair tests; specifying this option shuffles pair order [default: -1, rank order]")
         .metavar("N").store_into(gSettings.targetNumPairs);
+    program.add_argument("-H", "--useHugePages").help("Use Transparent Huge Pages for host allocations").store_into(gSettings.useHugePages);
+    std::vector<std::string> pairUuids;
+    program.add_argument("--pair")
+        .help("Restrict D2D tests to two PPU UUIDs; with two MPI ranks, bind the first UUID to rank 0 and the second UUID to rank 1")
+        .metavar("UUID")
+        .nargs(2)
+        .store_into(pairUuids);
 
     program.add_argument("--loopCount").help("Iterations of memcpy to be performed within a test sample")
         .store_into(loopCountArg).hidden();
@@ -405,6 +451,15 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (pairUuids.size() >= 2) {
+        if (pairUuids[0].empty() || pairUuids[1].empty()) {
+            if (shouldOutput) output->recordError("ERROR: --pair requires two non-empty PPU UUIDs");
+            return 1;
+        }
+        ppuPairUuid0 = pairUuids[0];
+        ppuPairUuid1 = pairUuids[1];
+    }
+
     if (testcasePrefixes.size() != 0 && testcasesToRun.size() != 0) {
         if (shouldOutput) output->recordError("You cannot specify both testcase and testcasePrefixes options at the same time");
         return 1;
@@ -412,6 +467,10 @@ int main(int argc, char **argv) {
 
     if (bufferSizeArg <= 0 || averageLoopCountArg <= 0 || loopCountArg <= 0) {
         if (shouldOutput) output->recordError("bufferSize, testSamples and loopCount must be greater than 0");
+        return 1;
+    }
+    if (static_cast<unsigned long long>(bufferSizeArg) > std::numeric_limits<size_t>::max() / _MiB) {
+        if (shouldOutput) output->recordError("bufferSize is too large to represent in bytes");
         return 1;
     }
     if (gSettings.nBlocks != -1 && gSettings.nBlocks <= 0) {
@@ -484,8 +543,62 @@ int main(int argc, char **argv) {
     HG_ASSERT(hgInit(0));
     HGML_ASSERT(hgmlInit());
     HG_ASSERT(hgDeviceGetCount(&deviceCount));
+
+    if (hasPpuPair()) {
+        if (normalizeUuidString(ppuPairUuid0) == normalizeUuidString(ppuPairUuid1)) {
+            if (shouldOutput) output->recordError("ERROR: --pair requires two distinct PPU UUIDs, got the same UUID twice: " +
+                                                ppuPairUuid0);
+            return 1;
+        }
+        int idx0 = getDeviceIndexByUuid(ppuPairUuid0, deviceCount);
+        int idx1 = getDeviceIndexByUuid(ppuPairUuid1, deviceCount);
+#ifdef MULTINODE
+        if (worldSize > 1) {
+            if (worldSize != 2) {
+                if (shouldOutput) output->recordError("ERROR: --pair requires exactly 2 MPI ranks (one PPU per rank). Got worldSize=" +
+                                                     std::to_string(worldSize));
+                return 1;
+            }
+            const int pairDevice = (worldRank == 0) ? idx0 : idx1;
+            int pairDevices[2];
+            ASSERT(MPI_Allgather(&pairDevice, 1, MPI_INT, pairDevices, 1, MPI_INT, MPI_COMM_WORLD) == MPI_SUCCESS);
+            std::ostringstream errors;
+            for (int rank = 0; rank < worldSize; rank++) {
+                if (pairDevices[rank] < 0) {
+                    errors << "ERROR: PPU UUID not found on rank " << rank << ": "
+                           << (rank == 0 ? ppuPairUuid0 : ppuPairUuid1) << '\n';
+                }
+            }
+            if (!errors.str().empty()) {
+                if (shouldOutput) output->recordError(errors.str());
+                return 1;
+            }
+            localDevice = pairDevice;
+        } else  // NOLINT(readability/braces)
+#endif
+        {
+            if (idx0 < 0 || idx1 < 0) {
+                if (shouldOutput) output->recordError("ERROR: One or both PPU UUIDs not found on this machine: " +
+                                                    ppuPairUuid0 + ", " + ppuPairUuid1);
+                return 1;
+            }
+            if (idx0 == idx1) {
+                if (shouldOutput) output->recordError("ERROR: Both UUIDs resolved to the same device index (" +
+                                                    std::to_string(idx0) + "); UUIDs: " +
+                                                    ppuPairUuid0 + ", " + ppuPairUuid1);
+                return 1;
+            }
+            ppuPairDev0 = idx0;
+            ppuPairDev1 = idx1;
+        }
+    }
+
     if (gSettings.bufferSizeMiB < kDefaultBufferSizeMiB) {
         output->recordWarning("NOTE: You have chosen a buffer size that is smaller than the default buffer size. It is suggested to use the default buffer size (512MB) to achieve maximal peak bandwidth.");
+    }
+
+    if (gSettings.useHugePages && !hugePagesEnabled()) {
+        output->recordWarning("NOTE: Huge pages were requested, but Transparent Huge Pages (THP) are not enabled on this system.");
     }
 
     char driverVersion[HGML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE];
@@ -537,6 +650,13 @@ int main(int argc, char **argv) {
             if (shouldOutput) output->recordError("Specified list of testcase prefixes did not match any testcases");
             return 1;
         }
+    }
+
+    if (hasPpuPair() && !selectedTestcasesIncludePpuPairRelevant(testcases, testcasesToRun)) {
+        std::string warning = "NOTE: --pair is set but none of the selected testcases are device-to-device tests that use the "
+            "PPU pair (single-node memcpy/latency or multinode device-to-device). The pair filter has no effect "
+            "on the current selection.";
+        output->recordWarning(warning);
     }
 
     // Preload the listed kernels on this rank's applicable devices, even with lazy loading enabled.

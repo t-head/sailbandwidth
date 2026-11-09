@@ -39,4 +39,8 @@ void verifyReportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
                          const unsigned int* hostInitPattern, unsigned long long numElements,
                          unsigned int numPatternElements);
 
+void verifyReportPatternFailure(const MemcpyBuffer* owner, HGdeviceptr buffer,
+                                const unsigned int* hostPattern, unsigned long long numElements,
+                                unsigned int numPatternElements, const char* patternName);
+
 #endif  // VERIFY_UTILS_H_

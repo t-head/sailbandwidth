@@ -100,7 +100,10 @@ void DeviceToDeviceReadCE::run(unsigned long long size, unsigned long long loopC
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -141,7 +144,10 @@ void DeviceToDeviceWriteCE::run(unsigned long long size, unsigned long long loop
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -173,7 +179,10 @@ void DeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned long long 
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -229,7 +238,10 @@ void DeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned long long
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 

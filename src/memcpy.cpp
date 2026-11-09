@@ -27,6 +27,7 @@
 #endif
 #define WARMUP_COUNT 4
 #include <cassert>
+#include <sys/mman.h>
 
 MemcpyBuffer::MemcpyBuffer(size_t bufferSize): buffer(nullptr), bufferSize(bufferSize) {}
 
@@ -237,12 +238,26 @@ HostBuffer::HostBuffer(size_t bufferSize, int targetDeviceId): MemcpyBuffer(buff
     HG_ASSERT(hgDevicePrimaryCtxRetain(&targetCtx, targetDeviceId));
     HG_ASSERT(hgCtxSetCurrent(targetCtx));
 
-    HG_ASSERT(hgMemHostAlloc(&buffer, bufferSize, HG_MEMHOSTALLOC_PORTABLE));
+    if (gSettings.useHugePages) {
+        buffer = aligned_alloc(2 * 1024 * 1024, bufferSize);
+        int err = madvise(buffer, bufferSize, MADV_HUGEPAGE);
+        ASSERT(err == 0);
+        HG_ASSERT(hgMemHostRegister(buffer, bufferSize, HG_MEMHOSTREGISTER_PORTABLE));
+        VERBOSE << "Allocated THP memory [" << buffer << ", " << (void*)((char*)buffer + bufferSize)
+                << ") size " << bufferSize << "\n";
+    } else {
+        HG_ASSERT(hgMemHostAlloc(&buffer, bufferSize, HG_MEMHOSTALLOC_PORTABLE));
+    }
 }
 
 HostBuffer::~HostBuffer() {
     if (isMemoryOwnedByHGGC(buffer)) {
-        HG_ASSERT(hgMemFreeHost(buffer));
+        if (gSettings.useHugePages) {
+            HG_ASSERT(hgMemHostUnregister(buffer));
+            free(buffer);
+        } else {
+            HG_ASSERT(hgMemFreeHost(buffer));
+        }
     } else {
         free(buffer);
     }
@@ -467,7 +482,7 @@ void MemcpyDispatchInfo::initInfo(const std::shared_ptr<MemcpyInitiator>& memcpy
             // Get the final copy size that will be used.
             // CE and SM copy sizes will differ due to possible truncation
             // during SM copies.
-            adjustedCopySizes[i] = memcpyInitiator->getAdjustedCopySize(srcBuffers[i]->getBufferSize(), die0streams[i], use_bulk);
+            adjustedCopySizes[i] = memcpyInitiator->getAdjustedCopySize(srcBuffers[i]->getBufferSize(), dstBuffers[i]->getBufferSize(), die0streams[i], use_bulk);
         }
     } else {
         mainstreams.resize(buffSize);
@@ -499,7 +514,7 @@ void MemcpyDispatchInfo::initInfo(const std::shared_ptr<MemcpyInitiator>& memcpy
             // Get the final copy size that will be used.
             // CE and SM copy sizes will differ due to possible truncation
             // during SM copies.
-            adjustedCopySizes[i] = memcpyInitiator->getAdjustedCopySize(srcBuffers[i]->getBufferSize(), mainstreams[i], use_bulk);
+            adjustedCopySizes[i] = memcpyInitiator->getAdjustedCopySize(srcBuffers[i]->getBufferSize(), dstBuffers[i]->getBufferSize(), mainstreams[i], use_bulk);
         }
     }
 }
@@ -690,6 +705,7 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     HGevent totalStart;
     HGevent totalEnd;
 
+    info.loopCount = loopCount;
     info.initInfo(memcpyInitiator);
     info.nodeHelper = nodeHelper;
     if (info.contexts.size() > 0) {
@@ -717,7 +733,7 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
                                       nullptr, info.die0streams[i], info.die1streams[i],
                                       info.srcBuffers[i]->getBufferSize(), WARMUP_COUNT,
                                       info.icnReadConfig);
-                memcpyInitiator->memcpyFunc(desc);
+                memcpyInitiator->memcpyFunc(desc, nullptr);
             } else {
                 nodeHelper->streamBlockerBlock(info.mainstreams[i], nullptr, nullptr);
 
@@ -725,7 +741,7 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
                                       info.mainstreams[i], nullptr, nullptr,
                                       info.srcBuffers[i]->getBufferSize(), WARMUP_COUNT,
                                       info.icnReadConfig);
-                memcpyInitiator->memcpyFunc(desc);
+                memcpyInitiator->memcpyFunc(desc, nullptr);
             }
         }
 
@@ -747,22 +763,23 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
 
         for (int i = 0; i < info.srcBuffers.size(); i++) {
             HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
-            ASSERT(info.srcBuffers[i]->getBufferSize() == info.dstBuffers[i]->getBufferSize());
+            size_t copySize = info.srcBuffers[i]->getBufferSize();
 
             if (isNdiesCeTest) {
                 MemcpyDescriptor desc(info.dstBuffers[i], info.srcBuffers[i],
                                       nullptr, info.die0streams[i], info.die1streams[i],
-                                      info.srcBuffers[i]->getBufferSize(), loopCount,
+                                      copySize, loopCount,
                                       info.icnReadConfig);
-                size_t realCopySizes = memcpyInitiator->memcpyFunc(desc);
-                ASSERT(info.adjustedCopySizes[i] == realCopySizes);
+                info.adjustedCopySizes[i] = memcpyInitiator->memcpyFunc(desc, &info);
             } else {
                 MemcpyDescriptor desc(info.dstBuffers[i], info.srcBuffers[i],
                                       info.mainstreams[i], nullptr, nullptr,
-                                      info.srcBuffers[i]->getBufferSize(), loopCount,
+                                      copySize, loopCount,
                                       info.icnReadConfig);
-                size_t realCopySizes = memcpyInitiator->memcpyFunc(desc);
-                ASSERT(info.adjustedCopySizes[i] == realCopySizes);
+                if (!info.verificationBuffers.empty()) {
+                    desc.verificationBuffer = info.verificationBuffers[i];
+                }
+                info.adjustedCopySizes[i] = memcpyInitiator->memcpyFunc(desc, &info);
             }
 
             info.recordStop(i);
@@ -792,6 +809,13 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
         if (!gSettings.skipVerification) {
             memcpyInitiator->memcmpPattern(info);
         }
+
+        for (int i = 0; i < info.verificationBuffers.size(); i++) {
+            HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
+            HG_ASSERT(hgMemFree(info.verificationBuffers[i]));
+        }
+        info.verificationBuffers.clear();
+        info.verificationSizes.clear();
 
         double sampleSumBandwidth = 0.0;
         for (int i = 0; i < bandwidthStats.size(); i++) {
@@ -858,11 +882,12 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     }
 }
 
-size_t MemcpyInitiatorSM::memcpyFunc(MemcpyDescriptor &desc) {
+size_t MemcpyInitiatorSM::memcpyFunc(MemcpyDescriptor &desc, MemcpyDispatchInfo* info) {
     return copyKernel(desc);
 }
 
-size_t MemcpyInitiatorSM::getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk) {
+size_t MemcpyInitiatorSM::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool use_bulk) {
+    ASSERT(srcSize == dstSize);
     if (!use_bulk) {
         HGdevice dev;
         HGcontext ctx;
@@ -879,22 +904,22 @@ size_t MemcpyInitiatorSM::getAdjustedCopySize(size_t size, HGstream stream, bool
         unsigned int totalThreadCount = blocks * threads;
         // We want to calculate the exact copy sizes that will be
         // used by the copy kernels.
-        if (size < (smallBufferThreshold * _MiB)) {
+        if (srcSize < (smallBufferThreshold * _MiB)) {
             // copy size is rounded down to 16 bytes
-            int numUint4 = size / sizeof(uint4);
+            int numUint4 = srcSize / sizeof(uint4);
             return numUint4 * sizeof(uint4);
         }
         // adjust size to elements (size is multiple of MB, so no truncation here)
-        size_t sizeInElement = size / sizeof(uint4);
+        size_t sizeInElement = srcSize / sizeof(uint4);
         // this truncates the copy
         sizeInElement = totalThreadCount * (sizeInElement / totalThreadCount);
         return sizeInElement * sizeof(uint4);
     } else {
-        return size;
+        return srcSize;
     }
 }
 
-size_t MemcpyInitiatorCE::memcpyFunc(MemcpyDescriptor &desc) {
+size_t MemcpyInitiatorCE::memcpyFunc(MemcpyDescriptor &desc, MemcpyDispatchInfo* info) {
     HGdeviceptr dst = desc.dstBuffer->getBuffer();
     HGdeviceptr src = desc.srcBuffer->getBuffer();
 
@@ -952,26 +977,29 @@ size_t MemcpyInitiatorCE::memcpyFunc(MemcpyDescriptor &desc) {
     return desc.copySize;
 }
 
-size_t MemcpyInitiatorCE::getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk) {
+size_t MemcpyInitiatorCE::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool use_bulk) {
+    ASSERT(srcSize == dstSize);
     // CE does not change/truncate buffer size
-    return size;
+    return srcSize;
 }
 
-size_t MemcpyInitiatorSMSplitWarp::getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk) {
-    int numUint4 = size / sizeof(uint4);
+size_t MemcpyInitiatorSMSplitWarp::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool use_bulk) {
+    ASSERT(srcSize == dstSize);
+    int numUint4 = srcSize / sizeof(uint4);
     return numUint4 * sizeof(uint4);
 }
 
-size_t MemcpyInitiatorMulticastWrite::memcpyFunc(MemcpyDescriptor &desc) {
+size_t MemcpyInitiatorMulticastWrite::memcpyFunc(MemcpyDescriptor &desc, MemcpyDispatchInfo* info) {
     return multicastCopy(desc.dstBuffer->getBuffer(), desc.srcBuffer->getBuffer(), desc.copySize, desc.mainstream, desc.loopCount);
 }
 
-size_t MemcpyInitiatorMulticastWrite::getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk) {
-    size = size / sizeof(unsigned);
-    return size * sizeof(unsigned);
+size_t MemcpyInitiatorMulticastWrite::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool use_bulk) {
+    ASSERT(srcSize == dstSize);
+    srcSize = srcSize / sizeof(unsigned);
+    return srcSize * sizeof(unsigned);
 }
 
-size_t MemcpyInitiatorSMSplitWarp::memcpyFunc(MemcpyDescriptor &desc) {
+size_t MemcpyInitiatorSMSplitWarp::memcpyFunc(MemcpyDescriptor &desc, MemcpyDispatchInfo* info) {
     return copyKernelSplitWarp(desc);
 }
 
@@ -985,4 +1013,146 @@ double MemPtrChaseOperation::doPtrChase(const int srcId, const MemcpyBuffer &pee
     double lat = 0.0;
     lat = latencyPtrChaseKernel(srcId, (void*)peerBuffer.getBuffer(), peerBuffer.getBufferSize(), latencyMemAccessCnt, smCount);
     return lat;
+}
+
+size_t MemcpyInitiatorSMReadOnly::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool) {
+    return MemcpyInitiatorSM::getAdjustedCopySize(srcSize, srcSize, stream, false);
+}
+
+size_t MemcpyInitiatorSMReadOnly::memcpyFunc(MemcpyDescriptor& desc, MemcpyDispatchInfo* info) {
+    HGdeviceptr d_verify = desc.verificationBuffer;
+    size_t result = readOnlyKernel(desc, d_verify);
+    if (info) {
+        info->verificationSizes.push_back(result);
+    }
+    return result;
+}
+
+void MemcpyInitiatorSMReadOnly::memsetPattern(MemcpyDispatchInfo& info) const {
+    // Only need to initialize source buffer for read-only test
+    for (int i = 0; i < info.srcBuffers.size(); i++) {
+        HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
+        // Pattern: (j, j+0x12345678, j+0xABCDEF01, j+0xDEADBEEF)
+        size_t bufferSize = info.srcBuffers[i]->getBufferSize();
+        uint4* h_pattern = nullptr;
+        HG_ASSERT(hgMemHostAlloc(reinterpret_cast<void**>(&h_pattern), bufferSize, HG_MEMHOSTALLOC_PORTABLE));
+        size_t numElements = bufferSize / sizeof(uint4);
+        for (size_t j = 0; j < numElements; j++) {
+            h_pattern[j] = make_uint4(j, j + 0x12345678, j + 0xABCDEF01, j + 0xDEADBEEF);
+        }
+        HG_ASSERT(hgMemcpyHtoDAsync(info.srcBuffers[i]->getBuffer(), h_pattern, bufferSize, info.mainstreams[i]));
+        HG_ASSERT(info.nodeHelper->streamSynchronizeWrapper(info.mainstreams[i]));
+        HG_ASSERT(hgMemFreeHost(h_pattern));
+        HGdevice dev;
+        HG_ASSERT(hgCtxGetDevice(&dev));
+        int numSm;
+        HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+        ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+        const size_t totalThreadCount = numSm * numThreadPerBlock;
+        // Allocate before stream blocking so allocation cannot wait on the blocked work.
+        HGdeviceptr d_verify;
+        HG_ASSERT(hgMemAlloc(&d_verify, totalThreadCount * sizeof(uint4)));
+        info.verificationBuffers.push_back(d_verify);
+        HG_ASSERT(hgMemsetD32Async(d_verify, 0, totalThreadCount * 4, info.mainstreams[i]));
+        HG_ASSERT(info.nodeHelper->streamSynchronizeWrapper(info.mainstreams[i]));
+    }
+}
+
+void MemcpyInitiatorSMReadOnly::memcmpPattern(MemcpyDispatchInfo& info) const {
+    for (int i = 0; i < info.srcBuffers.size(); i++) {
+        HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
+        HGdevice dev;
+        HG_ASSERT(hgCtxGetDevice(&dev));
+        int numSm;
+        HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+        ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+        const size_t totalThreadCount = numSm * numThreadPerBlock;
+        const size_t verificationWords = totalThreadCount * 4;
+        const size_t verificationBytes = verificationWords * sizeof(uint32_t);
+        verifyInjectFaultIfRequested(info.verificationBuffers[i], verificationBytes,
+                                    verifyLinkId(info.srcBuffers[i]), verifyLinkId(info.dstBuffers[i]), info.nodeHelper);
+        std::vector<uint32_t> matchMasks(verificationWords);
+        HG_ASSERT(hgMemcpyDtoHAsync(matchMasks.data(), info.verificationBuffers[i], verificationBytes, info.mainstreams[i]));
+        HG_ASSERT(info.nodeHelper->streamSynchronizeWrapper(info.mainstreams[i]));
+        const size_t totalElements = info.verificationSizes[i] / sizeof(uint4);
+        const unsigned int expected = 0xffffffffu;
+        if (std::any_of(matchMasks.begin(), matchMasks.end(),
+                        [expected](uint32_t mask) { return mask != expected; })) {
+            verifyReportPatternFailure(info.srcBuffers[i], info.verificationBuffers[i],
+                                       &expected, verificationWords, 1,
+                                       "timed-read match bits (word offset / 4 = global thread index; word offset % 4 = x/y/z/w)");
+            MPI_ABORT;
+            std::exit(1);
+        }
+        VERBOSE << "Read-only test: Verified timed-read match bits for " << totalThreadCount
+                << " threads over " << totalElements << " elements and " << info.loopCount << " iterations\n";
+    }
+}
+
+size_t MemcpyInitiatorSMWriteOnly::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool) {
+    return MemcpyInitiatorSM::getAdjustedCopySize(dstSize, dstSize, stream, false);
+}
+
+size_t MemcpyInitiatorSMWriteOnly::memcpyFunc(MemcpyDescriptor& desc, MemcpyDispatchInfo* info) {
+    // Warmup retains the 4-byte source size (no writes); timed execution uses the destination size.
+    if (info) {
+        desc.copySize = desc.dstBuffer->getBufferSize();
+    }
+    return writeOnlyKernel(desc);
+}
+
+void MemcpyInitiatorSMWriteOnly::memsetPattern(MemcpyDispatchInfo& info) const {
+    for (int i = 0; i < info.dstBuffers.size(); i++) {
+        HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
+        size_t bufferSize = info.dstBuffers[i]->getBufferSize();
+        HG_ASSERT(hgMemsetD32Async(info.dstBuffers[i]->getBuffer(), 0xffffffff,
+                                 bufferSize / sizeof(unsigned int), info.mainstreams[i]));
+        HG_ASSERT(info.nodeHelper->streamSynchronizeWrapper(info.mainstreams[i]));
+    }
+}
+
+void MemcpyInitiatorSMWriteOnly::memcmpPattern(MemcpyDispatchInfo& info) const {
+    for (int i = 0; i < info.dstBuffers.size(); i++) {
+        HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
+        size_t bufferElements = info.adjustedCopySizes[i] / sizeof(uint4);
+        if (bufferElements == 0) {
+            VERBOSE << "Write-only test: Buffer too small to verify\n";
+            continue;
+        }
+        verifyInjectFaultIfRequested(info.dstBuffers[i]->getBuffer(), info.adjustedCopySizes[i],
+                                    verifyLinkId(info.srcBuffers[i]), verifyLinkId(info.dstBuffers[i]), info.nodeHelper);
+        unsigned int expectedIteration = info.loopCount - 1;
+        HGdeviceptr d_errorCount;
+        HG_ASSERT(hgMemAlloc(&d_errorCount, sizeof(unsigned int)));
+        HG_ASSERT(hgMemsetD32(d_errorCount, 0, 1));
+        HG_ASSERT(verifyWriteOnlyKernel(info.mainstreams[i], info.dstBuffers[i]->getBuffer(), bufferElements,
+                                      numThreadPerBlock, expectedIteration, d_errorCount));
+        HG_ASSERT(info.nodeHelper->streamSynchronizeWrapper(info.mainstreams[i]));
+        unsigned int h_errorCount = 0;
+        HG_ASSERT(hgMemcpyDtoH(&h_errorCount, d_errorCount, sizeof(unsigned int)));
+        HG_ASSERT(hgMemFree(d_errorCount));
+        if (h_errorCount > 0) {
+            HGdevice dev;
+            HG_ASSERT(hgCtxGetDevice(&dev));
+            int numSm;
+            HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+            ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+            const size_t totalThreadCount = numSm * numThreadPerBlock;
+            std::vector<unsigned int> expected(totalThreadCount * 4);
+            for (size_t thread = 0; thread < totalThreadCount; thread++) {
+                expected[thread * 4] = thread % numThreadPerBlock;
+                expected[thread * 4 + 1] = thread / numThreadPerBlock;
+                expected[thread * 4 + 2] = expectedIteration;
+                expected[thread * 4 + 3] = 0xCAFEBABE;
+            }
+            verifyReportPatternFailure(info.dstBuffers[i], info.dstBuffers[i]->getBuffer(),
+                                       expected.data(), bufferElements * 4, expected.size(),
+                                       "write uint4 (thread index, block index, final iteration, 0xcafebabe)");
+            MPI_ABORT;
+            std::exit(1);
+        }
+        VERBOSE << "Write-only test: Verified ALL " << bufferElements << " elements correctly written (in parallel)\n";
+        VERBOSE << "  Last iteration counter: " << expectedIteration << " (loop completed "
+                << (expectedIteration + 1) << " times)\n";
+    }
 }

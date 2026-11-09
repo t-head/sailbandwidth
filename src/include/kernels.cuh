@@ -24,6 +24,11 @@
 
 const unsigned long long DEFAULT_SPIN_KERNEL_TIMEOUT_MS = 10000ULL;   // 10 seconds
 
+size_t readOnlyKernel(MemcpyDescriptor& desc, HGdeviceptr verificationBuffer);
+size_t writeOnlyKernel(MemcpyDescriptor& desc);
+HGresult verifyWriteOnlyKernel(HGstream stream, HGdeviceptr dstBuffer, size_t numElements,
+                                unsigned int numThreadPerBlock, unsigned int expectedIteration,
+                                HGdeviceptr d_errorCount);
 size_t copyKernel(MemcpyDescriptor &desc);
 size_t copyKernelSplitWarp(MemcpyDescriptor &desc);
 size_t multicastCopy(HGdeviceptr dstBuffer, HGdeviceptr srcBuffer, size_t size, HGstream stream, unsigned long long loopCount);
