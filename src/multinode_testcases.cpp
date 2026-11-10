@@ -21,7 +21,98 @@
 #include "output.h"
 #ifdef MULTINODE
 #include <mpi.h>
+#include <memory>
+#include <set>
 #include "multinode_memcpy.h"
+
+void Testcase::multinodeConcurrentPairHelper(unsigned long long size, unsigned long long loopCount, MemcpyInitiator *memcpyInitiator,
+                                              bool isRead, PeerValueMatrix<double> &bandwidthValues) {
+    auto *phaseHelper = new NodeHelperMulti(true);
+    MemcpyOperation memcpyInstance(loopCount, memcpyInitiator, phaseHelper, isRead ? PREFER_DST_CONTEXT : PREFER_SRC_CONTEXT,
+                                   MemcpyOperation::VECTOR_BW);
+    const bool copyFromPeer = isRead;
+
+    const auto phases = planConcurrentPairPhases(generateTestPairs(worldSize, gSettings.targetNumPairs), false);
+    for (size_t phaseIndex = 0; phaseIndex < phases.size(); phaseIndex++) {
+        phaseHelper->beginPhase(phaseIndex + 1, phases.size());
+        const auto &phase = phases[phaseIndex];
+        std::vector<std::unique_ptr<MultinodeDeviceBufferUnicast>> buffers;
+        std::vector<const MemcpyBuffer*> srcNodes;
+        std::vector<const MemcpyBuffer*> dstNodes;
+        for (const auto& pair : phase) {
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.first));
+            const MemcpyBuffer *srcNode = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.second));
+            const MemcpyBuffer *peerNode = buffers.back().get();
+
+            srcNodes.push_back(copyFromPeer ? peerNode : srcNode);
+            dstNodes.push_back(copyFromPeer ? srcNode : peerNode);
+        }
+
+        auto results = memcpyInstance.doMemcpyVector(srcNodes, dstNodes);
+        for (size_t i = 0; i < phase.size(); i++) {
+            bandwidthValues.value(phase[i].first, phase[i].second) = results[i];
+        }
+    }
+
+    recordStability(bandwidthValues, memcpyInstance);
+}
+
+void Testcase::multinodeConcurrentBidirPairHelper(unsigned long long size, unsigned long long loopCount, MemcpyInitiator *memcpyInitiator,
+                                                   bool isRead, PeerValueMatrix<double> &bandwidthValues1,
+                                                   PeerValueMatrix<double> &bandwidthValues2, PeerValueMatrix<double> &bandwidthValuesTotal) {
+    auto *phaseHelper = new NodeHelperMulti(true);
+    MemcpyOperation memcpyInstance(loopCount, memcpyInitiator, phaseHelper, isRead ? PREFER_DST_CONTEXT : PREFER_SRC_CONTEXT,
+                                   MemcpyOperation::VECTOR_BW);
+    const bool copyFromPeer = isRead;
+    const auto selectedPairs = generateTestPairs(worldSize, gSettings.targetNumPairs);
+    const std::set<std::pair<int, int>> selected(selectedPairs.begin(), selectedPairs.end());
+    const bool reuseReversePairs = gSettings.performanceCacheEnabled();
+
+    const auto phases = planConcurrentPairPhases(selectedPairs, reuseReversePairs);
+    for (size_t phaseIndex = 0; phaseIndex < phases.size(); phaseIndex++) {
+        phaseHelper->beginPhase(phaseIndex + 1, phases.size());
+        const auto &phase = phases[phaseIndex];
+        std::vector<std::unique_ptr<MultinodeDeviceBufferUnicast>> buffers;
+        std::vector<const MemcpyBuffer*> srcNodes;
+        std::vector<const MemcpyBuffer*> dstNodes;
+        for (const auto& pair : phase) {
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.first));
+            const MemcpyBuffer *src1 = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.first));
+            const MemcpyBuffer *src2 = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.second));
+            const MemcpyBuffer *peer1 = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.second));
+            const MemcpyBuffer *peer2 = buffers.back().get();
+
+            srcNodes.push_back(copyFromPeer ? peer1 : src1);
+            dstNodes.push_back(copyFromPeer ? src1 : peer1);
+            srcNodes.push_back(copyFromPeer ? src2 : peer2);
+            dstNodes.push_back(copyFromPeer ? peer2 : src2);
+        }
+
+        auto results = memcpyInstance.doMemcpyVector(srcNodes, dstNodes);
+        for (size_t i = 0; i < phase.size(); i++) {
+            const int srcDeviceId = phase[i].first;
+            const int peerDeviceId = phase[i].second;
+            const double srcExecuted = results[2 * i];
+            const double peerExecuted = results[2 * i + 1];
+            if (selected.count({srcDeviceId, peerDeviceId}) != 0) {
+                bandwidthValues1.value(srcDeviceId, peerDeviceId) = srcExecuted;
+                bandwidthValues2.value(srcDeviceId, peerDeviceId) = peerExecuted;
+                bandwidthValuesTotal.value(srcDeviceId, peerDeviceId) = srcExecuted + peerExecuted;
+            }
+            if (reuseReversePairs && selected.count({peerDeviceId, srcDeviceId}) != 0) {
+                bandwidthValues1.value(peerDeviceId, srcDeviceId) = peerExecuted;
+                bandwidthValues2.value(peerDeviceId, srcDeviceId) = srcExecuted;
+                bandwidthValuesTotal.value(peerDeviceId, srcDeviceId) = srcExecuted + peerExecuted;
+            }
+        }
+    }
+
+    recordStability(bandwidthValuesTotal, memcpyInstance);
+}
 
 // ============================================================================
 // MultinodeDeviceToDeviceTransfer
@@ -45,6 +136,15 @@ ContextPreference MultinodeDeviceToDeviceTransfer::getContextPreference() const 
 }
 
 void MultinodeDeviceToDeviceTransfer::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
+        multinodeConcurrentPairHelper(size, loopCount, createMemcpyInitiator(), accessType_ == AccessType::Read, bandwidthValues);
+        std::string label = buildOutputLabel();
+        output->addTestcaseResults(bandwidthValues, label);
+        output->displayUtilizationRatioMatrix(bandwidthValues, true, label.substr(0, label.find(" bandwidth (GB/s)")));
+        return;
+    }
+
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, createMemcpyInitiator(),
                                    new NodeHelperMulti(), getContextPreference());
@@ -142,6 +242,23 @@ ContextPreference MultinodeDeviceToDeviceBidirTransfer::getContextPreference() c
 }
 
 void MultinodeDeviceToDeviceBidirTransfer::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        std::string suffix = (accessType_ == AccessType::Read) ? "read" : "write";
+        PeerValueMatrix<double> bandwidthValues1(worldSize, worldSize, key + "_" + suffix + "1");
+        PeerValueMatrix<double> bandwidthValues2(worldSize, worldSize, key + "_" + suffix + "2");
+        PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
+        multinodeConcurrentBidirPairHelper(size, loopCount, createMemcpyInitiator(), accessType_ == AccessType::Read,
+                                           bandwidthValues1, bandwidthValues2, bandwidthValuesTotal);
+        std::string suffix1 = (accessType_ == AccessType::Read) ? "Read1" : "Write1";
+        std::string suffix2 = (accessType_ == AccessType::Read) ? "Read2" : "Write2";
+        output->addTestcaseResults(bandwidthValues1, buildOutputLabel(suffix1));
+        output->addTestcaseResults(bandwidthValues2, buildOutputLabel(suffix2));
+        std::string totalLabel = buildOutputLabel("Total");
+        output->addTestcaseResults(bandwidthValuesTotal, totalLabel);
+        output->displayUtilizationRatioMatrix(bandwidthValuesTotal, true, totalLabel.substr(0, totalLabel.find(" bandwidth (GB/s)")));
+        return;
+    }
+
     std::string suffix = (accessType_ == AccessType::Read) ? "read" : "write";
     PeerValueMatrix<double> bandwidthValues1(worldSize, worldSize, key + "_" + suffix + "1");
     PeerValueMatrix<double> bandwidthValues2(worldSize, worldSize, key + "_" + suffix + "2");
