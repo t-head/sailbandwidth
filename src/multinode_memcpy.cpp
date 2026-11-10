@@ -25,6 +25,9 @@
 
 #include "kernels.cuh"
 #include "multinode_memcpy.h"
+#include "output.h"
+#include "verify_utils.h"
+#include <array>
 
 MultinodeMemoryAllocation::MultinodeMemoryAllocation(size_t bufferSize, int MPI_rank): bufferSize(bufferSize), MPI_rank(MPI_rank) {
     hggcSetDevice(localDevice);
@@ -377,12 +380,20 @@ std::vector<std::pair<int, int>> generateTestPairs(int worldSize, long long targ
     return finalPairs;
 }
 
-NodeHelperMulti::NodeHelperMulti() : blockingVarDeviceAllocation(sizeof(*blockingVarDevice), 0)  {
+NodeHelperMulti::NodeHelperMulti(bool localRelease) : localRelease(localRelease), blockingVarDeviceAllocation(sizeof(*blockingVarDevice), 0)  {
     HG_ASSERT(hgMemHostAlloc((void **)&blockingVarHost, sizeof(*blockingVarHost), HG_MEMHOSTALLOC_PORTABLE));
     blockingVarDevice = (volatile int*) blockingVarDeviceAllocation.getBuffer();
+    if (localRelease) {
+        HG_ASSERT(hgMemHostAlloc((void **)&spinTimeoutHost, sizeof(*spinTimeoutHost), HG_MEMHOSTALLOC_PORTABLE));
+        *spinTimeoutHost = 0;
+    }
 }
 
 NodeHelperMulti::~NodeHelperMulti() {
+    if (localRelease) errorContext.clear();
+    if (spinTimeoutHost != nullptr) {
+        HG_ASSERT(hgMemFreeHost((void*)spinTimeoutHost));
+    }
     HG_ASSERT(hgMemFreeHost((void*)blockingVarHost));
 }
 
@@ -419,6 +430,23 @@ MemcpyDispatchInfo NodeHelperMulti::dispatchMemcpy(const std::vector<const Memcp
         rankOfFirstMemcpy = ranksUnfiltered[0];
     }
 
+    if (localRelease) {
+        phaseSrcBuffers = srcNodesUnfiltered;
+        phaseDstBuffers = dstNodesUnfiltered;
+        if (gSettings.verbose && worldRank == 0) {
+            std::ostringstream description;
+            description << "Phase " << phaseNumber << "/" << phaseCount << " " << currentTestcaseName
+                        << ": " << srcNodesUnfiltered.size() << " transports\n";
+            for (size_t i = 0; i < srcNodesUnfiltered.size(); i++) {
+                const int src = srcNodesUnfiltered[i]->getMPIRank();
+                const int dst = dstNodesUnfiltered[i]->getMPIRank();
+                description << "  Transport " << i << ": " << src << " -> " << dst
+                            << ", executor=" << ranksUnfiltered[i] << ", src=" << ppuHostByRank[src] << "/"
+                            << ppuBDFByRank[src] << ", dst=" << ppuHostByRank[dst] << "/" << ppuBDFByRank[dst] << '\n';
+            }
+            output->recordPhaseDiagnostics(description.str());
+        }
+    }
     return MemcpyDispatchInfo(p2pType, gSettings.isSingleDie, contexts, srcNodes, dstNodes, ranksUnfiltered);
 }
 
@@ -480,16 +508,157 @@ HGresult NodeHelperMulti::streamSynchronizeWrapper(HGstream stream) const {
 
 void NodeHelperMulti::streamBlockerReset() {
     *blockingVarHost = 0;
-    HG_ASSERT(hgMemsetD32((HGdeviceptr) blockingVarDevice, 0, 1));
+    if (localRelease) {
+        *spinTimeoutHost = 0;
+        deferred.reports.clear();
+        deferred.verboseReport.clear();
+        deferred.context = std::to_string(phaseNumber) + "/" + std::to_string(phaseCount) +
+                           ", sample " + std::to_string(++sampleNumber);
+        deferred.dumpTag = "_pid" + std::to_string(getpid()) + "_phase" + std::to_string(phaseNumber) +
+                           "_sample" + std::to_string(sampleNumber);
+    } else {
+        HG_ASSERT(hgMemsetD32((HGdeviceptr) blockingVarDevice, 0, 1));
+    }
 }
 
 void NodeHelperMulti::streamBlockerRelease() {
+    if (localRelease) {
+        synchronizeProcess();
+    }
     *blockingVarHost = 1;
 }
 
 void NodeHelperMulti::streamBlockerBlock(HGstream mainstream, HGstream die0stream, HGstream die1stream) {
+    if (localRelease) {
+        HGstream die1BlockedStream = gSettings.isSingleDie ? nullptr : die1stream;
+        HG_ASSERT(spinKernelReportTimeout(blockingVarHost, spinTimeoutHost, mainstream, die0stream, die1BlockedStream));
+        return;
+    }
     // MPI rank ranks[0] is released by blockingVar, writes to blockingVarDevice, releasing other ranks
     HG_ASSERT(spinKernelMultistage((worldRank == rankOfFirstMemcpy) ? blockingVarHost : nullptr, blockingVarDevice, mainstream, die0stream, die1stream));
+}
+
+bool NodeHelperMulti::streamBlockerTimedOut() {
+    if (!localRelease) {
+        return false;
+    }
+    int timedOut = (*spinTimeoutHost != 0) ? 1 : 0;
+    if (timedOut) {
+        deferred.reports.push_back("Spin release timeout: testcase=" + currentTestcaseName + ", phase=" +
+                                   deferred.context + ", rank=" + std::to_string(worldRank) +
+                                   ", host=" + ppuHostByRank[worldRank] + ", BDF=" + ppuBDFByRank[worldRank] + "\n");
+    }
+    ASSERT(MPI_Allreduce(MPI_IN_PLACE, &timedOut, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD) == MPI_SUCCESS);
+    return timedOut != 0;
+}
+
+DeferredVerification *NodeHelperMulti::deferredVerification() {
+    return localRelease ? &deferred : nullptr;
+}
+
+void NodeHelperMulti::beginPhase(size_t number, size_t count) {
+    phaseNumber = number;
+    phaseCount = count;
+    sampleNumber = 0;
+    errorContext = ", testcase=" + currentTestcaseName + ", phase=" + std::to_string(number) + "/" + std::to_string(count);
+}
+
+void NodeHelperMulti::verifyPhaseBuffers(MemcpyDispatchInfo &info) {
+    size_t localIndex = 0;
+    for (size_t i = 0; i < info.originalRanks.size(); i++) {
+        unsigned long long bytes = 0;
+        if (worldRank == info.originalRanks[i]) bytes = info.adjustedCopySizes[localIndex++];
+        ASSERT(MPI_Bcast(&bytes, 1, MPI_UNSIGNED_LONG_LONG, info.originalRanks[i], MPI_COMM_WORLD) == MPI_SUCCESS);
+        const auto *src = phaseSrcBuffers[i];
+        const auto *dst = phaseDstBuffers[i];
+        if (src->getMPIRank() == worldRank) {
+            verifyMemcpyBuffer(src, dst, true, static_cast<size_t>(bytes), info.nodeHelper);
+        }
+        if (dst->getMPIRank() == worldRank) {
+            verifyMemcpyBuffer(src, dst, false, static_cast<size_t>(bytes), info.nodeHelper);
+        }
+    }
+}
+
+static std::string gatherPhaseText(const std::string &local) {
+    std::string result;
+    std::array<char, 65536> chunk;
+    for (int rank = 0; rank < worldSize; rank++) {
+        unsigned long long length = worldRank == rank ? local.size() : 0;
+        ASSERT(MPI_Bcast(&length, 1, MPI_UNSIGNED_LONG_LONG, rank, MPI_COMM_WORLD) == MPI_SUCCESS);
+        for (unsigned long long offset = 0; offset < length; offset += chunk.size()) {
+            const int count = static_cast<int>(std::min<unsigned long long>(chunk.size(), length - offset));
+            if (worldRank == rank) std::copy_n(local.data() + offset, count, chunk.data());
+            ASSERT(MPI_Bcast(chunk.data(), count, MPI_CHAR, rank, MPI_COMM_WORLD) == MPI_SUCCESS);
+            if (worldRank == 0) result.append(chunk.data(), count);
+        }
+    }
+    return result;
+}
+
+PhaseVerificationFailures NodeHelperMulti::gatherPhaseVerificationFailures() {
+    PhaseVerificationFailures failures;
+    const int localFailures = static_cast<int>(deferred.reports.size());
+    failures.failuresByRank.resize(worldSize);
+    ASSERT(MPI_Allgather(&localFailures, 1, MPI_INT, failures.failuresByRank.data(), 1, MPI_INT, MPI_COMM_WORLD) == MPI_SUCCESS);
+    if (gSettings.verbose) {
+        const std::string verbose = gatherPhaseText(deferred.verboseReport);
+        if (worldRank == 0) output->recordPhaseDiagnostics(verbose);
+    }
+    if (std::any_of(failures.failuresByRank.begin(), failures.failuresByRank.end(), [](int count) { return count != 0; })) {
+        std::string localReports;
+        for (const auto &report : deferred.reports) localReports += report + "\n";
+        failures.reports = gatherPhaseText(localReports);
+    }
+    return failures;
+}
+
+void NodeHelperMulti::reportPhaseSample(MemcpyDispatchInfo &info, const std::vector<double> &bandwidths) {
+    size_t localIndex = 0;
+    std::ostringstream text;
+    for (size_t i = 0; i < info.originalRanks.size(); i++) {
+        double value = 0;
+        if (worldRank == info.originalRanks[i]) value = bandwidths[localIndex++];
+        ASSERT(MPI_Bcast(&value, 1, MPI_DOUBLE, info.originalRanks[i], MPI_COMM_WORLD) == MPI_SUCCESS);
+        text << "  Sample " << sampleNumber << ": " << phaseSrcBuffers[i]->getBufferString() << " -> "
+             << phaseDstBuffers[i]->getBufferString() << ": " << std::fixed << std::setprecision(2)
+             << value * 1e-9 << " GB/s (phase " << phaseNumber << ", executor " << info.originalRanks[i] << ")\n";
+    }
+    if (worldRank == 0) output->recordPhaseDiagnostics(text.str());
+}
+
+PairPhases planConcurrentPairPhases(const std::vector<std::pair<int, int>> &pairs, bool unorderedPairs) {
+    std::set<std::pair<std::string, std::string>> ppusInUse;
+    for (size_t rank = 0; rank < ppuHostByRank.size() && rank < ppuBDFByRank.size(); rank++) {
+        if (!ppusInUse.insert({ppuHostByRank[rank], ppuBDFByRank[rank]}).second) {
+            throw std::string("--maxConcurrentPairs >= 0 requires every MPI rank to use a different PPU");
+        }
+    }
+
+    PairPhases phases = planPairPhases(pairs, worldSize, unorderedPairs,
+                                       static_cast<size_t>(gSettings.maxConcurrentPairs));
+    unsigned long long digest = pairPhasesDigest(phases);
+    unsigned long long minDigest = 0;
+    unsigned long long maxDigest = 0;
+    ASSERT(MPI_Allreduce(&digest, &minDigest, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD) == MPI_SUCCESS);
+    ASSERT(MPI_Allreduce(&digest, &maxDigest, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD) == MPI_SUCCESS);
+    if (minDigest != maxDigest) {
+        throw std::string("The concurrent pair schedule differs between MPI ranks");
+    }
+
+    if (gSettings.verbose && worldRank == 0) {
+        size_t pairCount = 0;
+        size_t largestPhase = 0;
+        for (const auto &phase : phases) {
+            pairCount += phase.size();
+            largestPhase = std::max(largestPhase, phase.size());
+        }
+        std::ostringstream summary;
+        summary << "Concurrent pair schedule: " << pairCount << (unorderedPairs ? " unordered" : " ordered")
+                << " rank pairs in " << phases.size() << " phases, up to " << largestPhase << " pairs per phase\n";
+        output->recordPhaseDiagnostics(summary.str());
+    }
+    return phases;
 }
 
 #endif  // MULTINODE

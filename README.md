@@ -141,6 +141,7 @@ options; additional advanced options are defined in
 | `-m, --useMean` | off | Report the mean instead of the median |
 | `-H, --useHugePages` | off | Request Transparent Huge Pages for host transfer buffers |
 | `-P, --targetNumPairs <n>` | -1 | Target number of rank pairs sampled for multinode device-to-device pair tests; `-1` tests all pairs. Pairs run in rank order when omitted, or shuffled order when explicitly specified |
+| `--maxConcurrentPairs <N>` | -1 | Multinode pair schedule: `-1` preserves the sequential path; `0` enables automatic endpoint-disjoint phases; positive `N` limits each phase to `N` pairs, at most `floor(MPI ranks / 2)` (see [Concurrent pair schedule](#concurrent-pair-schedule)) |
 | `-F, --format <format>` | text | Output format: text, json, or perf |
 | `--pair <UUID0> <UUID1>` | – | Select two PPUs by UUID for pairwise device-to-device tests; bind the two ranks in MPI mode |
 
@@ -194,7 +195,9 @@ use `--skipVerification` to disable this. On a
 verification failure the run prints an aligned report that identifies the affected transfer —
 including each endpoint's host, rank and PCI BDF and the first bad offset — and, when both endpoints
 are locally readable, distinguishes whether the observed mismatch was already present in the source
-or appeared during the transfer. It also writes a dump of the mismatching values and aborts.
+or appeared during the transfer. It also writes a dump of the mismatching values and aborts on the
+original sequential path. The opt-in concurrent schedule finishes all checks in the failing phase
+and collects their reports before exiting (see [Concurrent pair schedule](#concurrent-pair-schedule)).
 
 The check fills the source buffer with the pattern the destination should end up with, and pre-fills
 the destination with a different marker. Afterwards a word still holding the marker is consistent
@@ -229,7 +232,7 @@ The following environment variables assist link fault diagnosis:
 
 | Variable | Description |
 |---|---|
-| `SAILBW_VERIFY=<srcId>,<dstId>` | Deliberately corrupt the matching link to exercise the failure path. Ids are device ordinals (single-node) or MPI ranks (multinode; forward with `mpirun -x`). |
+| `SAILBW_VERIFY=<srcId>,<dstId>[;<srcId>,<dstId>...]` | Deliberately corrupt matching transfers to exercise the failure path. Quote a semicolon-separated list to inject multiple faults. Ids are device ordinals (single-node) or MPI ranks (multinode; forward with `mpirun -x`). |
 | `SAILBW_DUMP_PATH=<dir>` | Directory for the human-readable dump of mismatching values. The dump is written on every verification failure whether or not this is set; it defaults to the current directory. Each rank writes to its own node, so point this at a shared directory to collect all dumps. |
 | `SAILBW_DUMP_SIZE=<N\|ALL>` | Number of bad values to dump (default 100; `ALL` dumps every mismatch). |
 
@@ -334,6 +337,73 @@ SUM multinode_device_to_device_memcpy_write_ce 92195.71
 
 The matrix row and column indices are MPI process ranks; each process controls one PPU. As in the
 single-node example, `SUM` is the sum of the matrix elements, not simultaneous aggregate throughput.
+
+### Concurrent pair schedule
+
+The `multinode_device_to_device_memcpy_*` and `multinode_device_to_device_bidirectional_memcpy_*`
+testcases accept one schedule option, `--maxConcurrentPairs N`:
+
+| N | Schedule |
+|---|---|
+| `-1` (default) | Original sequential path, including the existing `-P` order and error handling |
+| `0` | Enable concurrent endpoint-disjoint phases, with up to `floor(worldSize / 2)` pairs per phase |
+| `1..floor(worldSize / 2)` | Enable the same phase execution and diagnostics, with at most N pairs per phase |
+
+Non-integers, values below -1, and positive values above `floor(worldSize / 2)` are rejected. For a
+16-rank job the maximum is 8, even for bidirectional tests: N counts pairs, not individual copies.
+N=1 uses the phase order, local release and bidirectional mirror reuse; it is not the original
+sequential path. Rank counts and N do not need to be powers of two. This feature is validated on
+up to two nodes and 16 PPUs in one ICN domain. Host, collective and device-local tests are unchanged.
+
+- Phases follow the circle method over all ranks. With all pairs selected and N=0, single-direction
+  tests run 2(n-1) phases (2n for odd n), and bidirectional tests run n-1 phases (n for odd n).
+  Two eight-PPU nodes therefore run 30 or 15 phases of eight pairs. A PPU belongs to only one pair
+  in a phase. Bidirectional pairs intentionally send and receive concurrently, using four distinct
+  allocations per pair; buffers are not shared with other pairs or reused across phases.
+- Every matrix cell retains the sequential direction. Cell (a,b) in a read test is a reading b
+  (data b->a); in a write test it is a writing b (data a->b). Bidirectional Read1/Write1 records the
+  row rank's copy, Read2/Write2 records the column rank's copy. Mirrored cells swap the two directional
+  values; Total sums them. Only selected cells are populated. SUM is a sum of cells, not an aggregate
+  throughput measured over a common interval.
+- A pre-release MPI barrier ensures all ranks have enqueued the sample before setting their local
+  host flags. It encourages overlapping measurements, not exact simultaneous starts or finishes.
+  Timing uses each copy's own events. All copies, verification and diagnostics finish before another
+  sample or phase can start. Release uses no ICN polling.
+- `-P` still selects the pair set. In concurrent mode the phase table depends on that set, not its
+  shuffled input order. The existing `-P` shuffle/sampling permutation can differ across C++ standard
+  library versions; use the same toolchain for reproducible sampled comparisons.
+- `--pair UUID0 UUID1` still requires exactly two MPI ranks. With N=0 or 1 it binds the two PPUs,
+  runs two single-direction phases (0,1 then 1,0) or one bidirectional phase, and outputs a 2x2 matrix
+  indexed by ranks, not by the PPUs' device ordinals. N>1 is rejected in that job.
+
+For production checks, leave data verification enabled. Concurrent samples use a direction-specific
+source pattern, and both source and destination buffers are checked by their owning ranks after all
+copies complete. A mismatch is recorded without aborting the other checks. All ranks finish checking
+the current sample, including multiple faulty transports. Rank 0 then outputs every collected report,
+with testcase, phase, sample, transport, host/rank/BDF, offsets and expected/actual/XOR values. Separate
+dump files include rank, PID, phase, sample and direction to avoid overwrites. The log lists up to 100
+mismatching words per report; `SAILBW_DUMP_SIZE` controls the separate file, and `ALL` streams all
+mismatches to disk with bounded in-memory storage.
+
+On a data mismatch, release timeout, or invalid event timing, results for the affected testcase are
+not published as valid measurements. After completing the current sample's checks and reports, all
+ranks release their resources and exit nonzero: no further sample, phase or testcase starts.
+`-v` adds phase plans, endpoint identities, owner verification status and ordered per-copy samples,
+printed only by rank 0 outside the timed interval. JSON puts these verbose entries in
+`phase_diagnostics`; text prints them outside the matrices, and perf output omits them like other
+verbose output.
+
+This phase-completion guarantee requires live MPI ranks and working driver APIs. Unrecoverable driver
+errors, process loss or a permanently hung device cannot safely be made to finish a phase; the fatal
+abort path remains, with phase context where available. Buffer verification detects sampled final
+contents, not every transient hardware event. Use the concurrent schedule only where endpoint-disjoint
+pairs share no physical link, and do not overlap other workloads on the selected PPUs.
+
+```bash
+mpirun -np 16 -npernode 8 --hostfile <path/to/host.cfg> ./build/sailbandwidth -p multinode_device_to_device_memcpy multinode_device_to_device_bidirectional_memcpy --maxConcurrentPairs 0
+mpirun -np 4 -H node0:2,node1:2 ./build/sailbandwidth -p multinode_device_to_device_memcpy --maxConcurrentPairs 2 -v
+mpirun -np 2 -H node0:1,node1:1 ./build/sailbandwidth -t multinode_device_to_device_memcpy_write_ce --pair "GPU-<uuid-0>" "GPU-<uuid-1>" --maxConcurrentPairs 0
+```
 
 ## Copyright
 

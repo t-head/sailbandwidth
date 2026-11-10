@@ -84,7 +84,8 @@ void MemcpyInitiatorCE::memsetPattern(MemcpyDispatchInfo &info) const {
     for (int i = 0; i < info.srcBuffers.size(); i++) {
         HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
         memsetPatternHelper(info.dstBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_DST_SEED, info.nodeHelper);
-        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_SRC_SEED, info.nodeHelper);
+        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i],
+                        verifySourceSeed(info.srcBuffers[i], info.dstBuffers[i], info.nodeHelper), info.nodeHelper);
     }
 }
 
@@ -92,7 +93,8 @@ void MemcpyInitiatorSM::memsetPattern(MemcpyDispatchInfo &info) const {
     for (int i = 0; i < info.srcBuffers.size(); i++) {
         HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
         memsetPatternHelper(info.dstBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_DST_SEED, info.nodeHelper);
-        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_SRC_SEED, info.nodeHelper);
+        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i],
+                        verifySourceSeed(info.srcBuffers[i], info.dstBuffers[i], info.nodeHelper), info.nodeHelper);
     }
 }
 
@@ -100,7 +102,8 @@ void MemcpyInitiatorMulticastWrite::memsetPattern(MemcpyDispatchInfo &info) cons
     for (int i = 0; i < info.srcBuffers.size(); i++) {
         HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
         memsetPatternHelper(info.dstBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_DST_SEED, info.nodeHelper);
-        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_SRC_SEED, info.nodeHelper);
+        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i],
+                        verifySourceSeed(info.srcBuffers[i], info.dstBuffers[i], info.nodeHelper), info.nodeHelper);
     }
 }
 
@@ -108,7 +111,8 @@ void MemcpyInitiatorSMSplitWarp::memsetPattern(MemcpyDispatchInfo &info) const {
     for (int i = 0; i < info.srcBuffers.size(); i++) {
         HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
         memsetPatternHelper(info.dstBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_SRC_SEED, info.nodeHelper);
-        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i], VERIFY_SRC_SEED, info.nodeHelper);
+        memsetPatternHelper(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i],
+                        verifySourceSeed(info.srcBuffers[i], info.dstBuffers[i], info.nodeHelper), info.nodeHelper);
         memclearByWarpParity(info.dstBuffers[i]->getBuffer(), info.adjustedCopySizes[i], true /* clearOddWarpIndexed */, info.nodeHelper);
         memclearByWarpParity(info.srcBuffers[i]->getBuffer(), info.adjustedCopySizes[i], false /* clearOddWarpIndexed */, info.nodeHelper);
     }
@@ -141,8 +145,10 @@ enum VerifyTarget {
     VERIFY_SRC
 };
 
-// Verify that the buffer selected by 'target' matches the transferred pattern (VERIFY_SRC_SEED).
-// initSeed is that buffer's pre-fill pattern, used only for the failure report.
+// Verify that the buffer selected by 'target' matches the transferred pattern from verifySourceSeed(),
+// which is direction-specific in the concurrent schedule. initSeed is that buffer's pre-fill pattern,
+// used only for the failure report. With deferred verification, a failure is recorded for the phase
+// report instead of aborting.
 void memcmpPatternHelper(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf, VerifyTarget target, unsigned long long size, unsigned int initSeed, CompareKernelFunc compareKernel, std::shared_ptr<NodeHelper> nodeHelper) {
     const MemcpyBuffer* verifiedBuf = (target == VERIFY_SRC) ? srcBuf : dstBuf;
     HGdeviceptr buffer = verifiedBuf->getBuffer();
@@ -155,7 +161,8 @@ void memcmpPatternHelper(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
 
     // Allocate 2MB of pattern
     HG_ASSERT(hgMemHostAlloc((void**)&h_pattern, sizeof(char) * _2MiB, HG_MEMHOSTALLOC_PORTABLE));
-    xorshift2MBPattern(h_pattern, VERIFY_SRC_SEED);
+    const unsigned int expectedSeed = verifySourceSeed(srcBuf, dstBuf, nodeHelper);
+    xorshift2MBPattern(h_pattern, expectedSeed);
     HG_ASSERT(hgMemAlloc(&d_pattern, sizeof(char) * _2MiB));
     HG_ASSERT(hgMemcpyAsync(d_pattern, (HGdeviceptr)h_pattern, sizeof(char) * _2MiB, HG_STREAM_PER_THREAD));
 
@@ -164,7 +171,9 @@ void memcmpPatternHelper(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
     HG_ASSERT(hgMemcpyAsync(d_errorFlag, (HGdeviceptr)&h_errorFlag, sizeof(int), HG_STREAM_PER_THREAD));
 
     // Optional SAILBW_VERIFY fault injection.
-    verifyInjectFaultIfRequested(buffer, size, verifyLinkId(srcBuf), verifyLinkId(dstBuf), nodeHelper);
+    if (target == VERIFY_DST || nodeHelper->deferredVerification() == nullptr) {
+        verifyInjectFaultIfRequested(buffer, size, verifyLinkId(srcBuf), verifyLinkId(dstBuf), nodeHelper);
+    }
 
     // launch kernel to compare
     HG_ASSERT(compareKernel(HG_STREAM_PER_THREAD, buffer, d_pattern, num_elements, num_pattern_elements, d_errorFlag));
@@ -175,21 +184,46 @@ void memcmpPatternHelper(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
     HG_ASSERT(hgMemFree(d_errorFlag));
     HG_ASSERT(hgMemFree(d_pattern));
 
+    DeferredVerification* deferred = nodeHelper->deferredVerification();
+    if (deferred != nullptr && gSettings.verbose) {
+        std::ostringstream line;
+        line << "Verification " << deferred->context << ": " << srcBuf->getBufferString() << " -> "
+             << dstBuf->getBufferString() << ", " << (target == VERIFY_SRC ? "source" : "destination")
+             << " owner rank " << worldRank << ", bytes=" << size << ": "
+             << (h_errorFlag == 0 ? "PASS" : "FAIL") << '\n';
+        deferred->verboseReport += line.str();
+    }
     if (h_errorFlag != 0) {
         // Regenerate the verified buffer's pre-fill pattern for the report; split-warp buffers were
         // half-cleared by warp parity, so no per-word init pattern exists for them.
         unsigned int* h_initPattern = nullptr;
-        if (initSeed != VERIFY_SRC_SEED) {
+        if (initSeed != expectedSeed) {
             HG_ASSERT(hgMemHostAlloc((void**)&h_initPattern, sizeof(char) * _2MiB, HG_MEMHOSTALLOC_PORTABLE));
             xorshift2MBPattern(h_initPattern, initSeed);
         }
-        verifyReportFailure(srcBuf, dstBuf, verifiedBuf, h_pattern, h_initPattern, num_elements, num_pattern_elements);
+        if (deferred != nullptr) {
+            deferred->reports.push_back(verifyFailureReport(srcBuf, dstBuf, verifiedBuf, h_pattern, h_initPattern,
+                                                            num_elements, num_pattern_elements, deferred->context,
+                                                            deferred->dumpTag + "_src" + std::to_string(verifyLinkId(srcBuf)) +
+                                                            "_dst" + std::to_string(verifyLinkId(dstBuf)) +
+                                                            (target == VERIFY_SRC ? "_source" : "_destination")));
+        } else {
+            verifyReportFailure(srcBuf, dstBuf, verifiedBuf, h_pattern, h_initPattern, num_elements, num_pattern_elements);
+        }
         if (h_initPattern != nullptr) {
             HG_ASSERT(hgMemFreeHost((void*)h_initPattern));
         }
     }
     HG_ASSERT(hgMemFreeHost((void*)h_pattern));
-    ASSERT(h_errorFlag == 0);
+    if (deferred == nullptr) {
+        ASSERT(h_errorFlag == 0);
+    }
+}
+
+void verifyMemcpyBuffer(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf, bool source,
+                        size_t size, const std::shared_ptr<NodeHelper>& nodeHelper) {
+    const unsigned int initSeed = source ? verifySourceSeed(srcBuf, dstBuf, nodeHelper) : VERIFY_DST_SEED;
+    memcmpPatternHelper(srcBuf, dstBuf, source ? VERIFY_SRC : VERIFY_DST, size, initSeed, memcmpKernel, nodeHelper);
 }
 
 void MemcpyInitiatorCE::memcmpPattern(MemcpyDispatchInfo &info) const {
@@ -596,6 +630,33 @@ void MemcpyDispatchInfo::waitStop(int buffIdx, int waitIdx) {
 }
 
 void MemcpyDispatchInfo::elapsedTime(int buffIdx, double *bandwidth, unsigned long long loopCount) {
+    DeferredVerification *deferred = nodeHelper ? nodeHelper->deferredVerification() : nullptr;
+    if (deferred != nullptr) {
+        float time0 = 0.0f, time1 = 0.0f;
+        HGresult result0, result1 = HGGC_SUCCESS;
+        if (p2pType == P2PType::CE && sm >= 89 && !icnReadConfig.useSingleLinkForIcnRead) {
+            result0 = hgEventElapsedTime(&time0, die0StartFlags[buffIdx], die0StopFlags[buffIdx]);
+            if (!isSingleDie) result1 = hgEventElapsedTime(&time1, die1StartFlags[buffIdx], die1StopFlags[buffIdx]);
+        } else {
+            result0 = hgEventElapsedTime(&time0, mainStartFlags[buffIdx], mainStopFlags[buffIdx]);
+        }
+        const float elapsed = std::max(time0, time1);
+        const bool secondDie = p2pType == P2PType::CE && sm >= 89 &&
+                               !icnReadConfig.useSingleLinkForIcnRead && !isSingleDie;
+        if (result0 != HGGC_SUCCESS || result1 != HGGC_SUCCESS || !std::isfinite(time0) || time0 <= 0.0f ||
+            (secondDie && (!std::isfinite(time1) || time1 <= 0.0f))) {
+            std::ostringstream report;
+            report << "Timing FAILED: phase=" << deferred->context << ", " << srcBuffers[buffIdx]->getBufferString()
+                   << " -> " << dstBuffers[buffIdx]->getBufferString() << ", executor=" << worldRank
+                   << ", event_status=" << static_cast<int>(result0) << "/" << static_cast<int>(result1)
+                   << ", elapsed_ms=" << elapsed << '\n';
+            deferred->reports.push_back(report.str());
+            *bandwidth = 0;
+            return;
+        }
+        *bandwidth = (static_cast<double>(adjustedCopySizes[buffIdx]) * loopCount * 1000.0) / elapsed;
+        return;
+    }
     float mainTimeMs = 0.0f;
     if (p2pType == P2PType::CE && sm >= 89 && !icnReadConfig.useSingleLinkForIcnRead) {
         float die0TimeMs = 0.0f, die1TimeMs = 0.0f;
@@ -715,6 +776,15 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     HG_ASSERT(hgEventCreate(&totalStart, HG_EVENT_DEFAULT));
     HG_ASSERT(hgEventCreate(&totalEnd, HG_EVENT_DEFAULT));
 
+    bool spinTimedOut = false;
+    std::string phaseError;
+#ifdef MULTINODE
+    NodeHelperMulti *phaseHelper = nullptr;
+    if (nodeHelper->deferredVerification() != nullptr) {
+        phaseHelper = dynamic_cast<NodeHelperMulti*>(nodeHelper.get());
+        ASSERT(phaseHelper != nullptr);
+    }
+#endif
     // This loop is for sampling the testcase (which itself has a loop count)
     for (unsigned int n = 0; n < gSettings.averageLoopCount; n++) {
         nodeHelper->streamBlockerReset();
@@ -805,11 +875,15 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
             info.sync(i);
         }
         nodeHelper->synchronizeProcess();
+        spinTimedOut = nodeHelper->streamBlockerTimedOut();
 
         if (!gSettings.skipVerification) {
-            memcpyInitiator->memcmpPattern(info);
+#ifdef MULTINODE
+            if (phaseHelper != nullptr) phaseHelper->verifyPhaseBuffers(info);
+            else
+#endif
+                memcpyInitiator->memcmpPattern(info);
         }
-
         for (int i = 0; i < info.verificationBuffers.size(); i++) {
             HG_ASSERT(hgCtxSetCurrent(info.contexts[i]));
             HG_ASSERT(hgMemFree(info.verificationBuffers[i]));
@@ -817,6 +891,7 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
         info.verificationBuffers.clear();
         info.verificationSizes.clear();
 
+        std::vector<double> sampleBandwidths;
         double sampleSumBandwidth = 0.0;
         for (int i = 0; i < bandwidthStats.size(); i++) {
             double bandwidth;
@@ -825,6 +900,12 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
             bandwidth = memcpyInitiator->getAdjustedBandwidth(bandwidth);
             bandwidthStats[i](bandwidth);
             sampleSumBandwidth += (double) bandwidth;
+#ifdef MULTINODE
+            if (phaseHelper != nullptr) {
+                sampleBandwidths.push_back(bandwidth);
+                continue;
+            }
+#endif
 
             if (bandwidthValue == BandwidthValue::SUM_BW || bandwidthValue == BandwidthValue::TOTAL_BW || i == 0) {
                 // Verbose print only the values that are used for the final output
@@ -833,6 +914,20 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
             }
         }
 
+#ifdef MULTINODE
+        if (phaseHelper != nullptr) {
+            const auto failures = phaseHelper->gatherPhaseVerificationFailures();
+            if (std::any_of(failures.failuresByRank.begin(), failures.failuresByRank.end(), [](int count) { return count != 0; })) {
+                phaseError = "Concurrent phase " + phaseHelper->deferredVerification()->context +
+                             " failed; all transfers in this sample have completed. Verification was " +
+                             (gSettings.skipVerification ? "SKIPPED. " : "completed for every transport. ") +
+                             "No further samples, phases or testcases will run.\n" + failures.reports;
+                stopRemainingTestcases = true;
+            }
+            if (gSettings.verbose && phaseError.empty()) phaseHelper->reportPhaseSample(info, sampleBandwidths);
+        }
+#endif
+        if (spinTimedOut || !phaseError.empty()) break;
         sumBandwidthStat(sampleSumBandwidth);
 
         if (bandwidthValue == BandwidthValue::TOTAL_BW) {
@@ -860,6 +955,12 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
     HG_ASSERT(hgEventDestroy(totalEnd));
 
     info.freeInfo(memcpyInitiator);
+
+    if (!phaseError.empty()) throw phaseError;
+    if (spinTimedOut) {
+        throw std::string("A spin kernel reached its " + std::to_string(DEFAULT_SPIN_KERNEL_TIMEOUT_MS) +
+                          " ms timeout before the concurrent pair release; the results are discarded");
+    }
 
     if (bandwidthValue == BandwidthValue::SUM_BW) {
         recordCoefficientOfVariation(sumBandwidthStat.coefficientOfVariation());

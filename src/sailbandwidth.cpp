@@ -50,6 +50,10 @@ int localRank = 0;
 int worldRank = 0;
 int worldSize = 1;
 std::string currentTestcaseName;
+bool stopRemainingTestcases = false;
+#ifdef MULTINODE
+std::string errorContext;
+#endif
 Output *output;
 
 std::unique_ptr<Environment> env;
@@ -220,6 +224,11 @@ void runTestcase(std::vector<Testcase*> &testcases, const std::string &testcaseI
         }
     } catch (std::string &s) {
         output->setTestcaseStatusAndAddIfNeeded(test->testKey(), SBW_ERROR_STATUS, s);
+        if (gSettings.isConcurrentPairSchedule() &&
+            (test->testKey().find("multinode_device_to_device_memcpy_") == 0 ||
+             test->testKey().find("multinode_device_to_device_bidirectional_memcpy_") == 0)) {
+            stopRemainingTestcases = true;
+        }
     }
 }
 
@@ -367,6 +376,10 @@ int main(int argc, char **argv) {
     program.add_argument("-P", "--targetNumPairs")
         .help("Target pairs for multinode device-to-device pair tests; specifying this option shuffles pair order [default: -1, rank order]")
         .metavar("N").store_into(gSettings.targetNumPairs);
+    program.add_argument("--maxConcurrentPairs")
+        .help("Schedule of multinode device-to-device pair tests: -1 keeps the sequential path, 0 runs phases of up to "
+              "floor(MPI ranks / 2) endpoint-disjoint rank pairs, N caps each phase at N pairs [default: -1]")
+        .metavar("N").store_into(gSettings.maxConcurrentPairs);
     program.add_argument("-H", "--useHugePages").help("Use Transparent Huge Pages for host allocations").store_into(gSettings.useHugePages);
     std::vector<std::string> pairUuids;
     program.add_argument("--pair")
@@ -479,6 +492,22 @@ int main(int argc, char **argv) {
     }
     if (gSettings.nThreads != -1 && gSettings.nThreads <= 0) {
         if (shouldOutput) output->recordError("nThreads must be -1 (auto) or greater than 0");
+        return 1;
+    }
+    if (gSettings.maxConcurrentPairs < -1) {
+        std::stringstream errmsg;
+        errmsg << "ERROR: Invalid maxConcurrentPairs value: " << gSettings.maxConcurrentPairs
+               << ". Must be -1 (one pair at a time), 0 (no limit), or a positive number.";
+        if (shouldOutput) output->recordError(errmsg.str());
+        return 1;
+    }
+    if (gSettings.maxConcurrentPairs > worldSize / 2) {
+        std::stringstream errmsg;
+        errmsg << "ERROR: maxConcurrentPairs (" << gSettings.maxConcurrentPairs
+               << ") exceeds the maximum of " << worldSize / 2 << " rank pairs per phase for worldSize " << worldSize
+               << ", because every rank takes part in at most one pair per phase. Use 0 for no limit or specify a value <= "
+               << worldSize / 2 << ".";
+        if (shouldOutput) output->recordError(errmsg.str());
         return 1;
     }
 
@@ -666,26 +695,31 @@ int main(int argc, char **argv) {
 
     // Emit a NOTE explaining that explicit -P shuffles rank pairs, while final matrices remain ordered by rank.
 #ifdef MULTINODE
-    if (gSettings.verbose && gSettings.targetNumPairsSpecified && gSettings.targetNumPairs != 0 && worldSize > 1) {
-        bool hasRankPairTestcase = testcasesToRun.empty();
-        for (const auto& testcaseID : testcasesToRun) {
-            Testcase* test;
-            try {
-                test = findTestcase(testcases, testcaseID);
-            } catch (const std::string&) {
-                continue;
-            }
-            const auto key = test->testKey();
-            if (key.find("multinode_device_to_device_memcpy_") == 0 ||
-                key.find("multinode_device_to_device_bidirectional_memcpy_") == 0) {
-                hasRankPairTestcase = true;
-                break;
-            }
+    bool hasRankPairTestcase = testcasesToRun.empty();
+    for (const auto& testcaseID : testcasesToRun) {
+        Testcase* test;
+        try {
+            test = findTestcase(testcases, testcaseID);
+        } catch (const std::string&) {
+            continue;
         }
-        if (hasRankPairTestcase) {
+        const auto key = test->testKey();
+        if (key.find("multinode_device_to_device_memcpy_") == 0 ||
+            key.find("multinode_device_to_device_bidirectional_memcpy_") == 0) {
+            hasRankPairTestcase = true;
+            break;
+        }
+    }
+    if (hasRankPairTestcase && worldSize > 1) {
+        if (!gSettings.isConcurrentPairSchedule() && gSettings.verbose && gSettings.targetNumPairsSpecified &&
+            gSettings.targetNumPairs != 0) {
             OUTPUT << "NOTE: Multinode D2D rank pairs are executed in a shuffled order, "
                       "final result matrices remain ordered by rank."
                    << std::endl << std::endl;
+        }
+        if (gSettings.isConcurrentPairSchedule()) {
+            output->recordWarning("NOTE: Multinode D2D rank pairs are measured concurrently in phases; "
+                                  "each PPU takes part in at most one rank pair per phase.");
         }
     }
 #endif
@@ -694,10 +728,12 @@ int main(int argc, char **argv) {
         // run all testcases
         for (auto testcase : testcases) {
             runTestcase(testcases, testcase->testKey());
+            if (stopRemainingTestcases) break;
         }
     } else {
         for (const auto& testcaseIndex : testcasesToRun) {
             runTestcase(testcases, testcaseIndex);
+            if (stopRemainingTestcases) break;
         }
     }
 
@@ -708,5 +744,5 @@ int main(int argc, char **argv) {
     }
 
     output->printInfo();
-    return 0;
+    return stopRemainingTestcases ? 1 : 0;
 }

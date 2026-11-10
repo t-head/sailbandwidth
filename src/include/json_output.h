@@ -44,6 +44,7 @@ class JsonOutput : public Output {
     void recordErrorCurrentTest(const std::string &errorPart1, const std::string &errorPart2) override;
 
     void recordWarning(const std::string &warning) override;
+    void recordPhaseDiagnostics(const std::string &message) override;
 
     void addVersionInfo() override;
 

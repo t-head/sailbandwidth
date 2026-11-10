@@ -20,13 +20,21 @@
 #define MULTINODE_MEMCPY_H_
 #ifdef MULTINODE
 
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "ppu_common.h"
 #include "memcpy.h"
+#include "pair_schedule.h"
 
 std::vector<std::pair<int, int>> generateTestPairs(int worldSize, long long targetNumPairs = -1);
+PairPhases planConcurrentPairPhases(const std::vector<std::pair<int, int>> &pairs, bool unorderedPairs);
+
+struct PhaseVerificationFailures {
+    std::vector<int> failuresByRank;
+    std::string reports;
+};
 
 class MultinodeMemoryAllocation {
  protected:
@@ -129,13 +137,22 @@ class MultinodeDeviceBufferLocal : public MultinodeDeviceBuffer {
 class NodeHelperMulti : public NodeHelper {
  private:
     int rankOfFirstMemcpy;
+    bool localRelease;
 
     // streamBlocker
     volatile int* blockingVarHost;
     volatile int* blockingVarDevice;
+    volatile int* spinTimeoutHost = nullptr;
     MultinodeMemoryAllocationUnicast blockingVarDeviceAllocation;
+
+    DeferredVerification deferred;
+    size_t phaseNumber = 0;
+    size_t phaseCount = 0;
+    unsigned int sampleNumber = 0;
+    std::vector<const MemcpyBuffer*> phaseSrcBuffers;
+    std::vector<const MemcpyBuffer*> phaseDstBuffers;
  public:
-    NodeHelperMulti();
+    explicit NodeHelperMulti(bool localRelease = false);
     ~NodeHelperMulti();
     MemcpyDispatchInfo dispatchMemcpy(const std::vector<const MemcpyBuffer*> &srcBuffers, const std::vector<const MemcpyBuffer*> &dstBuffers, P2PType p2pType, ContextPreference ctxPreference);
     double calculateTotalBandwidth(double totalTime, double totalSize, size_t loopCount);
@@ -149,6 +166,13 @@ class NodeHelperMulti : public NodeHelper {
     void streamBlockerReset();
     void streamBlockerRelease();
     void streamBlockerBlock(HGstream mainstream, HGstream die0stream, HGstream die1stream);
+    bool streamBlockerTimedOut();
+    DeferredVerification *deferredVerification();
+
+    void beginPhase(size_t number, size_t count);
+    void verifyPhaseBuffers(MemcpyDispatchInfo &info);
+    void reportPhaseSample(MemcpyDispatchInfo &info, const std::vector<double> &bandwidths);
+    PhaseVerificationFailures gatherPhaseVerificationFailures();
 };
 
 #endif  // MULTINODE
