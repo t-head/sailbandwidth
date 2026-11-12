@@ -89,11 +89,13 @@ Copy Engine (CE):
 | `one_to_all_write_ce`, `one_to_all_read_ce` | One device transfers with all peers simultaneously; the aggregate bandwidth at that device is reported |
 | `device_local_copy` | Copy between two buffers local to the same device |
 
-Streaming Multiprocessor (SM): the SM counterparts of the CE testcases above, except
-`device_local_copy`, plus the following latency testcases:
+Streaming Multiprocessor (SM): the SM counterparts of the CE testcases above, plus the following device-local and latency testcases:
 
 | Testcase | Description |
 |---|---|
+| `device_local_copy_sm` | SM copy between two buffers on the same PPU |
+| `device_local_read_sm` | SM read bandwidth from local device memory |
+| `device_local_write_sm` | SM write bandwidth to local device memory |
 | `host_device_latency_sm` | Pointer-chase latency for device access to host memory |
 | `device_to_device_latency_sm` | Pointer-chase latency for device ↔ device access |
 
@@ -137,8 +139,10 @@ options; additional advanced options are defined in
 | `-d, --disableAffinity` | off | Disable automatic CPU affinity control |
 | `-i, --testSamples <n>` | 3 | Benchmark iterations per testcase |
 | `-m, --useMean` | off | Report the mean instead of the median |
+| `-H, --useHugePages` | off | Request Transparent Huge Pages for host transfer buffers |
 | `-P, --targetNumPairs <n>` | -1 | Target number of rank pairs sampled for multinode device-to-device pair tests; `-1` tests all pairs. Pairs run in rank order when omitted, or shuffled order when explicitly specified |
 | `-F, --format <format>` | text | Output format: text, json, or perf |
+| `--pair <UUID0> <UUID1>` | – | Select two PPUs by UUID for pairwise device-to-device tests; bind the two ranks in MPI mode |
 
 - The coefficient of variation (CV) describes run-to-run variation; lower values indicate more
   stable measurements. It is reported only on paths that record it and have enough samples, not
@@ -233,6 +237,49 @@ The following environment variables assist link fault diagnosis:
 SAILBW_DUMP_PATH=/tmp SAILBW_DUMP_SIZE=ALL SAILBW_VERIFY=0,1 \
     ./build/sailbandwidth -t device_to_device_memcpy_read_sm -v
 ```
+
+## Pairwise PPU Testing
+
+The `--pair` option restricts device-to-device tests to a single, explicitly specified pair of PPUs identified by their UUIDs. This is useful for isolating and measuring a specific link without running the full all-pairs sweep.
+
+### Finding PPU UUIDs
+
+A PPU UUID reported by `ppu-smi -L` has the form `GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. The full UUID is required. For `--pair`, both `GPU-` and `PPU-` prefixes are accepted; the prefix can also be omitted. Matching is case-insensitive.
+
+On a single node, `ppu-smi -L` lists every PPU with its UUID:
+
+```
+$ ppu-smi -L
+PPU 0: ZW-XXX (UUID: GPU-<uuid-0>)
+PPU 1: ZW-XXX (UUID: GPU-<uuid-1>)
+...
+```
+
+### Single-node pairwise test
+
+For a single-process run, `--pair` applies to:
+
+- `device_to_device_memcpy_*`
+- `device_to_device_bidirectional_memcpy_*`
+- `device_to_device_latency_sm`
+
+Pass two different UUIDs visible on the node. Replace the quoted placeholders with actual UUIDs:
+
+```bash
+./build/sailbandwidth -t device_to_device_memcpy_read_sm --pair "GPU-<uuid-0>" "GPU-<uuid-1>"
+```
+
+Only the selected device pair is tested; untested matrix entries are `N/A`. Host-device, collective and device-local testcases are not restricted by this option.
+
+### Multinode pairwise test
+
+Use a multinode build and exactly two MPI ranks, one per PPU. The first UUID selects the PPU for rank 0, and the second selects the PPU for rank 1; each UUID must be visible on that rank's node. Configure the hostfile or job scheduler to place the ranks on the intended nodes.
+
+```bash
+mpirun -np 2 ./build/sailbandwidth -t multinode_device_to_device_memcpy_read_sm --pair "GPU-<uuid-0>" "GPU-<uuid-1>"
+```
+
+Use the `multinode_device_to_device_memcpy_*` and `multinode_device_to_device_bidirectional_memcpy_*` families for MPI pairwise measurements. Matrix indices identify MPI ranks.
 
 ## Multinode benchmarks
 

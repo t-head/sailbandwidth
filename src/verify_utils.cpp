@@ -240,13 +240,13 @@ VerifyScan scanVerifiedBuffer(const MemcpyBuffer* srcBuf, const MemcpyBuffer* ve
                               HGdeviceptr buffer,
                               const unsigned int* hostPattern, const unsigned int* hostInitPattern,
                               unsigned long long numElements, unsigned int numPatternElements,
-                              unsigned long long listLimit) {
+                              unsigned long long listLimit, bool compareSource) {
     VerifyScan scan;
     scan.haveInitPattern = hostInitPattern != nullptr;
     // The source is dropped from the comparison when it has no local mapping, when another rank owns
     // it, or when it is the verified buffer itself (the bidirectional split-warp copy rewrote it).
     HGdeviceptr srcBuffer = srcBuf->getBuffer();
-    scan.srcReadable = srcBuffer != static_cast<HGdeviceptr>(0) && srcBuffer != buffer &&
+    scan.srcReadable = compareSource && srcBuffer != static_cast<HGdeviceptr>(0) && srcBuffer != buffer &&
                        ownedLocally(srcBuf);
     // Source vs transfer can only be told apart when this process can independently read the source
     // and verified destination. A remote, unmapped, or self-verified source reports only received
@@ -375,7 +375,7 @@ void writeDumpLegend(std::ostream& f, bool attributable) {
 std::string writeDumpFile(const char* dumpSpec, const MemcpyBuffer* srcBuf,
                           const MemcpyBuffer* dstBuf, const MemcpyBuffer* verifiedBuf,
                           HGdeviceptr buffer, const VerifyScan& scan,
-                          unsigned long long numElements) {
+                          unsigned long long numElements, const char* patternName) {
     std::string path = makeDumpPath(resolveDumpDir(dumpSpec), verifyLinkId(verifiedBuf),
                                     scan.firstOffset);
     std::ofstream f(path);
@@ -389,6 +389,9 @@ std::string writeDumpFile(const char* dumpSpec, const MemcpyBuffer* srcBuf,
     f << "# sailbandwidth data-verification mismatch dump\n";
     writeIdentity(f, "# ", srcBuf, dstBuf);
     field(f, "# ", "buffer") << (void*)buffer << "\n";
+    if (patternName != nullptr) {
+        field(f, "# ", "pattern") << patternName << "\n";
+    }
     writeStats(f, "# ", scan, numElements);
     field(f, "# ", "shown below") << scan.listed.size() << " of " << scan.total << " bad values";
     if (scan.total > scan.listed.size()) {
@@ -431,6 +434,60 @@ std::string writeDumpFile(const char* dumpSpec, const MemcpyBuffer* srcBuf,
     return path;
 }
 
+void reportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
+                   const MemcpyBuffer* verifiedBuf, HGdeviceptr buffer,
+                   const unsigned int* hostPattern, const unsigned int* hostInitPattern,
+                   unsigned long long numElements, unsigned int numPatternElements,
+                   const char* patternName, bool compareSource) {
+    // Written on every failure, since that is when the detail is wanted; SAILBW_DUMP_PATH only
+    // selects a directory other than the current one.
+    const char* dumpSpec = getenv("SAILBW_DUMP_PATH");
+    if (dumpSpec == nullptr) {
+        dumpSpec = ".";
+    }
+    const unsigned long long listLimit = parseDumpSize();
+    VerifyScan scan = scanVerifiedBuffer(srcBuf, verifiedBuf, buffer, hostPattern, hostInitPattern,
+                                         numElements, numPatternElements, listLimit, compareSource);
+
+    std::stringstream r;
+    r << "Data verification FAILED\n";
+    writeIdentity(r, "  ", srcBuf, dstBuf);
+    if (patternName != nullptr) {
+        field(r, "  ", "pattern") << patternName << "\n";
+    }
+    if (scan.total == 0) {
+        field(r, "  ", "note") << "the check found a mismatch but reading the buffer back showed none"
+                                  " (may be transient)\n";
+        RecordError(r);
+        return;
+    }
+
+    HGdeviceptr firstAddr = (HGdeviceptr)((char*)buffer + scan.firstOffset * sizeof(unsigned int));
+    field(r, "  ", "first bad address") << (void*)firstAddr << "\n";
+    field(r, "  ", "first bad offset") << scan.firstOffset << " (word) / "
+                                       << scan.firstOffset * sizeof(unsigned int) << " (byte)\n";
+    if (patternName != nullptr) {
+        field(r, "  ", "first expected") << hex8(scan.listed.front().expected) << "\n";
+        field(r, "  ", "first actual") << hex8(scan.listed.front().actual) << "\n";
+    }
+    writeStats(r, "  ", scan, numElements);
+    if (faultMatchesLink(verifyLinkId(srcBuf), verifyLinkId(dstBuf))) {
+        field(r, "  ", "note") << "values corrupted by SAILBW_VERIFY (simulated fault)\n";
+    }
+
+    std::string path = writeDumpFile(dumpSpec, srcBuf, dstBuf, verifiedBuf, buffer, scan,
+                                     numElements, patternName);
+    if (!path.empty()) {
+#ifdef MULTINODE
+        field(r, "  ", "dumped file") << env->getHostname() << ":" << path
+                                      << " (on the reporting rank's node)\n";
+#else
+        field(r, "  ", "dumped file") << path << "\n";
+#endif
+    }
+    RecordError(r);
+}
+
 }  // namespace
 
 int verifyLinkId(const MemcpyBuffer* buf) {
@@ -454,45 +511,14 @@ void verifyReportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
                          const MemcpyBuffer* verifiedBuf, const unsigned int* hostPattern,
                          const unsigned int* hostInitPattern, unsigned long long numElements,
                          unsigned int numPatternElements) {
-    HGdeviceptr buffer = verifiedBuf->getBuffer();
-    // Written on every failure, since that is when the detail is wanted; SAILBW_DUMP_PATH only
-    // selects a directory other than the current one.
-    const char* dumpSpec = getenv("SAILBW_DUMP_PATH");
-    if (dumpSpec == nullptr) {
-        dumpSpec = ".";
-    }
-    const unsigned long long listLimit = parseDumpSize();
-    VerifyScan scan = scanVerifiedBuffer(srcBuf, verifiedBuf, buffer, hostPattern, hostInitPattern,
-                                         numElements, numPatternElements, listLimit);
+    reportFailure(srcBuf, dstBuf, verifiedBuf, verifiedBuf->getBuffer(), hostPattern,
+                  hostInitPattern, numElements, numPatternElements, nullptr, true);
+}
 
-    std::stringstream r;
-    r << "Data verification FAILED\n";
-    writeIdentity(r, "  ", srcBuf, dstBuf);
-    if (scan.total == 0) {
-        field(r, "  ", "note") << "the check found a mismatch but reading the buffer back showed none"
-                                  " (may be transient)\n";
-        RecordError(r);
-        return;
-    }
-
-    HGdeviceptr firstAddr = (HGdeviceptr)((char*)buffer + scan.firstOffset * sizeof(unsigned int));
-    field(r, "  ", "first bad address") << (void*)firstAddr << "\n";
-    field(r, "  ", "first bad offset") << scan.firstOffset << " (word) / "
-                                       << scan.firstOffset * sizeof(unsigned int) << " (byte)\n";
-    writeStats(r, "  ", scan, numElements);
-    if (faultMatchesLink(verifyLinkId(srcBuf), verifyLinkId(dstBuf))) {
-        field(r, "  ", "note") << "values corrupted by SAILBW_VERIFY (simulated fault)\n";
-    }
-
-    std::string path = writeDumpFile(dumpSpec, srcBuf, dstBuf, verifiedBuf, buffer, scan,
-                                     numElements);
-    if (!path.empty()) {
-#ifdef MULTINODE
-        field(r, "  ", "dumped file") << env->getHostname() << ":" << path
-                                      << " (on the reporting rank's node)\n";
-#else
-        field(r, "  ", "dumped file") << path << "\n";
-#endif
-    }
-    RecordError(r);
+void verifyReportPatternFailure(const MemcpyBuffer* owner, HGdeviceptr buffer,
+                                const unsigned int* hostPattern, unsigned long long numElements,
+                                unsigned int numPatternElements, const char* patternName) {
+    // Generated verification values have no independent source payload to compare.
+    reportFailure(owner, owner, owner, buffer, hostPattern, nullptr,
+                  numElements, numPatternElements, patternName, false);
 }

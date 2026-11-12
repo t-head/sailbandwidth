@@ -108,6 +108,7 @@ class MemcpyDescriptor {
     HGstream die1stream;
     size_t copySize;
     unsigned long long loopCount;
+    HGdeviceptr verificationBuffer = 0;
     
     // icn read
     IcnReadConfig icnReadConfig;
@@ -146,6 +147,7 @@ class MemcpyDispatchInfo {
  public:
     P2PType p2pType;
     bool isSingleDie;
+    unsigned long long loopCount;
     
     // use vpipe id and enable read optimize
     IcnReadConfig icnReadConfig;
@@ -166,6 +168,8 @@ class MemcpyDispatchInfo {
     std::vector<const MemcpyBuffer*> dstBuffers;
     std::vector<int> originalRanks;
     std::vector<size_t> adjustedCopySizes;
+    std::vector<HGdeviceptr> verificationBuffers;
+    std::vector<size_t> verificationSizes;
     std::shared_ptr<NodeHelper> nodeHelper;
     MemcpyDispatchInfo(P2PType p2pType, bool isSingleDie, std::vector<HGcontext> contexts, std::vector<const MemcpyBuffer*> srcBuffers,
                        std::vector<const MemcpyBuffer*> dstBuffers, std::vector<int> originalRanks = {}, const IcnReadConfig& icnReadConfig = {});
@@ -228,9 +232,9 @@ class MemcpyInitiator {
     // Pure virtual function for implementation of the actual memcpy function
     // return actual bytes copied
     // This can vary from copySize due to SM copies truncated the copy to achieve max bandwidth
-    virtual size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor) = 0;
+    virtual size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor, MemcpyDispatchInfo* info = nullptr) = 0;
     // Calculate the truncated sizes used by copy kernels
-    virtual size_t getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk) = 0;
+    virtual size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk) = 0;
     // Fill buffer with a pattern
     virtual void memsetPattern(MemcpyDispatchInfo &info) const = 0;
     // Compare buffer with a pattern
@@ -248,9 +252,9 @@ class MemcpyInitiatorSM : public MemcpyInitiator {
  public:
     MemcpyInitiatorSM() : MemcpyInitiator(P2PType::SM) {}
 
-    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor);
+    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor, MemcpyDispatchInfo* info = nullptr);
     // Calculate the truncated sizes used by copy kernels
-    size_t getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk);
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk);
     // Fill buffer with a pattern
     void memsetPattern(MemcpyDispatchInfo &info) const;
     // Compare buffer with a pattern
@@ -259,13 +263,35 @@ class MemcpyInitiatorSM : public MemcpyInitiator {
     double getAdjustedBandwidth(double bandwidth);
 };
 
+class MemcpyInitiatorSMReadOnly : public MemcpyInitiatorSM {
+ public:
+    // Calculate the truncated sizes used by copy kernels (read-only: only src buffer is accessed)
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk) override;
+    size_t memcpyFunc(MemcpyDescriptor& desc, MemcpyDispatchInfo* info = nullptr) override;
+    // Fill buffer with a pattern
+    void memsetPattern(MemcpyDispatchInfo& info) const override;
+    // Compare timed-read checksums with the expected pattern
+    void memcmpPattern(MemcpyDispatchInfo& info) const override;
+};
+
+class MemcpyInitiatorSMWriteOnly : public MemcpyInitiatorSM {
+ public:
+    // Calculate the truncated sizes used by copy kernels (write-only: only dst buffer is accessed)
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk) override;
+    size_t memcpyFunc(MemcpyDescriptor& desc, MemcpyDispatchInfo* info = nullptr) override;
+    // Fill buffer with a pattern
+    void memsetPattern(MemcpyDispatchInfo& info) const override;
+    // Compare buffer with a pattern
+    void memcmpPattern(MemcpyDispatchInfo& info) const override;
+};
+
 class MemcpyInitiatorCE : public MemcpyInitiator  {
  public:
     MemcpyInitiatorCE() : MemcpyInitiator(P2PType::CE) {}
 
-    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor);
+    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor, MemcpyDispatchInfo* info = nullptr);
     // Calculate the truncated sizes used by copy kernels
-    size_t getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk);
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk);
     // Fill buffer with a pattern
     void memsetPattern(MemcpyDispatchInfo &info) const;
     // Compare buffer with a pattern
@@ -278,9 +304,9 @@ class MemcpyInitiatorMulticastWrite : public MemcpyInitiator {
  public:
     MemcpyInitiatorMulticastWrite() : MemcpyInitiator(P2PType::MULTI_CAST) {}
 
-    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor);
+    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor, MemcpyDispatchInfo* info = nullptr);
     // Calculate the truncated sizes used by copy kernels
-    size_t getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk);
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk);
     // Fill buffer with a pattern
     void memsetPattern(MemcpyDispatchInfo &info) const;
     // Compare buffer with a pattern
@@ -293,9 +319,9 @@ class MemcpyInitiatorSMSplitWarp : public MemcpyInitiatorSM {
  public:
     MemcpyInitiatorSMSplitWarp() : MemcpyInitiatorSM(SM_SPLIT) {}
 
-    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor);
+    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor, MemcpyDispatchInfo* info = nullptr);
     // Calculate the truncated sizes used by copy kernels
-    size_t getAdjustedCopySize(size_t size, HGstream stream, bool use_bulk);
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk);
     // Fill buffer with a pattern
     void memsetPattern(MemcpyDispatchInfo &info) const;
     // Compare buffer with a pattern

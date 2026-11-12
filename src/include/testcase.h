@@ -81,6 +81,12 @@ class Testcase {
     virtual void run(unsigned long long size, unsigned long long loopCount) = 0;
 };
 
+// Filter source and peer device ordinals only when both --pair endpoints are locally visible.
+inline bool isPpuPairEndpoint(int deviceId) {
+    if (!hasPpuPair()) return true;
+    if (ppuPairDev0 < 0 || ppuPairDev1 < 0) return true;
+    return deviceId == ppuPairDev0 || deviceId == ppuPairDev1;
+}
 
 // CE Testcase classes
 
@@ -497,6 +503,27 @@ class OneToAllReadSM: public Testcase {
     FilterResult filter() {
         return Testcase::filterHasAccessiblePeerPairs();
     }
+};
+
+class DeviceLocalCopySM : public Testcase {
+ public:
+    DeviceLocalCopySM() : Testcase("device_local_copy_sm", "\tMeasures bandwidth of SM copies between local device buffers.") {
+    }
+    void run(unsigned long long size, unsigned long long loopCount) override;
+};
+
+class DeviceLocalReadSM : public Testcase {
+ public:
+    DeviceLocalReadSM() : Testcase("device_local_read_sm", "\tMeasures bandwidth of SM read-only access to local device memory.") {
+    }
+    void run(unsigned long long size, unsigned long long loopCount) override;
+};
+
+class DeviceLocalWriteSM : public Testcase {
+ public:
+    DeviceLocalWriteSM() : Testcase("device_local_write_sm", "\tMeasures bandwidth of SM write-only access to local device memory.") {
+    }
+    void run(unsigned long long size, unsigned long long loopCount) override;
 };
 
 #ifdef MULTINODE

@@ -49,6 +49,7 @@ struct TestSettings {
     bool skipVerification = false;
     bool disableAffinity = false;
     bool useMean = false;
+    bool useHugePages = false;
 
     // Output format (string-based, validated after parsing)
     std::string outputFormat = "text";

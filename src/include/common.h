@@ -19,9 +19,12 @@
 #ifndef COMMON_H_
 #define COMMON_H_
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <float.h>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <ostream>
@@ -58,6 +61,10 @@ const unsigned int strideLen = 16; /* cacheLine size 128 Bytes, 16 words */
 const unsigned long latencyMemAccessCnt = 1000000; /* 1M total read accesses to gauge latency */
 extern int sm;
 extern int deviceCount;
+
+extern std::string ppuPairUuid0, ppuPairUuid1;
+extern int ppuPairDev0, ppuPairDev1;
+inline bool hasPpuPair() { return !ppuPairUuid0.empty(); }
 
 // Device ordinal of the PPU owned by the process (multinode only)
 extern int localDevice;
@@ -242,6 +249,17 @@ inline std::string getUnitString(UnitType unitType) {
         default:
             return "";
     }
+}
+
+inline bool hugePagesEnabled() {
+    std::ifstream thp_enabled("/sys/kernel/mm/transparent_hugepage/enabled");
+    if (thp_enabled.is_open()) {
+        std::string line;
+        std::getline(thp_enabled, line);
+        return (line.find("[always]") != std::string::npos ||
+                line.find("[madvise]") != std::string::npos);
+    }
+    return false;
 }
 
 #endif  // COMMON_H_

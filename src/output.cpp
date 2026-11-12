@@ -108,7 +108,7 @@ std::string getDeviceDisplayInfo(int deviceOrdinal) {
 
     HG_ASSERT(hgDeviceGet(&dev, deviceOrdinal));
     HG_ASSERT(hgDeviceGetName(name, sizeof(name), dev));
-    return std::string(name) + " (" + getDevicePciTriple(deviceOrdinal) + ")";
+    return std::string(name) + " (" + getDevicePciTriple(deviceOrdinal) + "), UUID: " + getDeviceUuidString(deviceOrdinal);
 }
 
 // Upper-case PCI BDF of a local device ordinal, e.g. "00000001:C9:00.0".
@@ -139,7 +139,9 @@ void exchangeDeviceInfo(int deviceCount, std::vector<char> &hostnameExchange,
     std::vector<int> deviceCountExchange(worldSize);
     MPI_Allgather(&deviceCount, 1, MPI_INT, deviceCountExchange.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
-    localDevice = localRank % deviceCount;
+    if (!hasPpuPair()) {
+        localDevice = localRank % deviceCount;
+    }
 
     // It's not recommended to run more ranks per node than PPU count, but we want to make sure we handle it gracefully
     std::map<std::string, int> ppuCounts;

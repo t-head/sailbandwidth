@@ -102,7 +102,10 @@ void DeviceToDeviceReadSM::run(unsigned long long size, unsigned long long loopC
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -130,11 +133,13 @@ void DeviceToDeviceLatencySM::run(unsigned long long size, unsigned long long lo
     MemPtrChaseOperation ptrChaseOp(latencyMemAccessCnt);
 
     for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
+        if (!isPpuPairEndpoint(peerDeviceId)) continue;
         DeviceBuffer peerBuffer(size, peerDeviceId);
         latencyHelper(peerBuffer, true);
 
         for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if (!isPpuPairEndpoint(srcDeviceId)) continue;
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
                 continue;
             }
 
@@ -159,7 +164,10 @@ void DeviceToDeviceWriteSM::run(unsigned long long size, unsigned long long loop
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -191,7 +199,10 @@ void DeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned long long 
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -232,7 +243,10 @@ void DeviceToDeviceBidirWriteSM::run(unsigned long long size, unsigned long long
 
     for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
         for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
-            if (!gSettings.testLocalCopy && peerDeviceId == srcDeviceId) {
+            if ((!gSettings.testLocalCopy || hasPpuPair()) && peerDeviceId == srcDeviceId) {
+                continue;
+            }
+            if (!isPpuPairEndpoint(srcDeviceId) || !isPpuPairEndpoint(peerDeviceId)) {
                 continue;
             }
 
@@ -384,4 +398,53 @@ void OneToAllReadSM::run(unsigned long long size, unsigned long long loopCount) 
     oneToAllHelper(size, memcpyInstance, bandwidthValues, true);
 
     output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) <- PPU(column) bandwidth (GB/s)");
+}
+
+void DeviceLocalCopySM::run(unsigned long long size, unsigned long long loopCount) {
+    PeerValueMatrix<double> bandwidthValues(1, deviceCount, key);
+    MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM());
+
+    for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+        DeviceBuffer srcBuffer(size, deviceId);
+        DeviceBuffer dstBuffer(size, deviceId);
+        bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(srcBuffer, dstBuffer);
+    }
+
+    recordStability(bandwidthValues, memcpyInstance);
+    output->addTestcaseResults(bandwidthValues, "memcpy SM local PPU(column) bandwidth (GB/s)");
+}
+
+// ============================================================================
+// Device Local Read/Write Tests (SM)
+// ============================================================================
+void DeviceLocalReadSM::run(unsigned long long size, unsigned long long loopCount) {
+    PeerValueMatrix<double> bandwidthValues(1, deviceCount, key);
+    MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSMReadOnly());
+
+    for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+        DeviceBuffer srcBuffer(size, deviceId);
+        // Read-only test: allocate minimal destination buffer (not actually used)
+        DeviceBuffer dstBuffer(sizeof(unsigned), deviceId);
+
+        bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(srcBuffer, dstBuffer);
+    }
+
+    recordStability(bandwidthValues, memcpyInstance);
+    output->addTestcaseResults(bandwidthValues, "SM local PPU(column) read-only bandwidth (GB/s)");
+}
+
+void DeviceLocalWriteSM::run(unsigned long long size, unsigned long long loopCount) {
+    PeerValueMatrix<double> bandwidthValues(1, deviceCount, key);
+    MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSMWriteOnly());
+
+    for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+        // Write-only test: allocate minimal source buffer (not actually used)
+        DeviceBuffer srcBuffer(sizeof(unsigned), deviceId);
+        DeviceBuffer dstBuffer(size, deviceId);
+
+        bandwidthValues.value(0, deviceId) = memcpyInstance.doMemcpy(srcBuffer, dstBuffer);
+    }
+
+    recordStability(bandwidthValues, memcpyInstance);
+    output->addTestcaseResults(bandwidthValues, "SM local PPU(column) write-only bandwidth (GB/s)");
 }
