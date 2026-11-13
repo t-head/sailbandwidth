@@ -166,6 +166,14 @@ void JsonOutput::recordWarning(const std::string &warning) {
     m_root[SBW_TITLE][SBW_WARNING].append(warning);
 }
 
+void JsonOutput::recordPhaseDiagnostics(const std::string &message) {
+    if (!shouldOutput || message.empty()) return;
+    Json::Value &testcases = m_root[SBW_TITLE][SBW_TESTCASES];
+    if (testcases.isArray() && !testcases.empty()) {
+        testcases[testcases.size() - 1]["phase_diagnostics"].append(message);
+    }
+}
+
 void JsonOutput::addVersionInfo() {
     m_root[SBW_TITLE][SBW_VERSION] = SAILBANDWIDTH_VERSION;
     m_root[SBW_TITLE]["HGGC Build Driver API Version"] = HGGC_VERSION;

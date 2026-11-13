@@ -74,6 +74,7 @@ extern int worldRank;
 extern int worldSize;
 // testKey of the currently running testcase (for failure reports)
 extern std::string currentTestcaseName;
+extern bool stopRemainingTestcases;
 
 class Verbosity {
  public:

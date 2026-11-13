@@ -28,7 +28,7 @@
 // Link-endpoint id: MPI rank in multinode, else device ordinal.
 int verifyLinkId(const MemcpyBuffer* buf);
 
-// SAILBW_VERIFY: corrupt the buffer head if this link is the requested one.
+// SAILBW_VERIFY: corrupt the buffer head if this link is one of the requested ones.
 void verifyInjectFaultIfRequested(HGdeviceptr buffer, unsigned long long size, int linkSrcId,
                                   int linkDstId, const std::shared_ptr<NodeHelper>& nodeHelper);
 
@@ -42,5 +42,16 @@ void verifyReportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
 void verifyReportPatternFailure(const MemcpyBuffer* owner, HGdeviceptr buffer,
                                 const unsigned int* hostPattern, unsigned long long numElements,
                                 unsigned int numPatternElements, const char* patternName);
+
+unsigned int verifySourceSeed(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
+                              const std::shared_ptr<NodeHelper>& nodeHelper);
+void verifyMemcpyBuffer(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf, bool source,
+                        size_t size, const std::shared_ptr<NodeHelper>& nodeHelper);
+
+std::string verifyFailureReport(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
+                                const MemcpyBuffer* verifiedBuf, const unsigned int* hostPattern,
+                                const unsigned int* hostInitPattern, unsigned long long numElements,
+                                unsigned int numPatternElements, const std::string& context,
+                                const std::string& dumpTag);
 
 #endif  // VERIFY_UTILS_H_

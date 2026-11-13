@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <limits.h>
 #include <ostream>
 #include <vector>
@@ -73,19 +74,33 @@ std::string hex8(unsigned int value) {
     return s.str();
 }
 
-// Whether the SAILBW_VERIFY=<srcId>,<dstId> fault-injection request targets this link.
+// Whether the SAILBW_VERIFY=<srcId>,<dstId>[;<srcId>,<dstId>...] fault-injection request targets this link.
 bool faultMatchesLink(int linkSrcId, int linkDstId) {
     const char* spec = getenv("SAILBW_VERIFY");
     if (spec == nullptr) {
         return false;
     }
-    char* endp = nullptr;
-    long injSrc = strtol(spec, &endp, 10);
-    if (endp == nullptr || *endp != ',') {
-        return false;
+    const char* entry = spec;
+    while (*entry != '\0') {
+        char* endp = nullptr;
+        long injSrc = strtol(entry, &endp, 10);
+        if (endp == entry || *endp != ',') {
+            return false;
+        }
+        const char* dstText = endp + 1;
+        long injDst = strtol(dstText, &endp, 10);
+        if (endp == dstText) {
+            return false;
+        }
+        if (injSrc == linkSrcId && injDst == linkDstId) {
+            return true;
+        }
+        if (*endp != ';') {
+            return false;
+        }
+        entry = endp + 1;
     }
-    long injDst = strtol(endp + 1, nullptr, 10);
-    return injSrc == linkSrcId && injDst == linkDstId;
+    return false;
 }
 
 #ifdef MULTINODE
@@ -179,10 +194,13 @@ void readEndpointChunk(const MemcpyBuffer* buf, HGdeviceptr base, unsigned long 
 
 // Identity of the failing transfer (console report and dump header).
 void writeIdentity(std::ostream& os, const char* prefix, const MemcpyBuffer* srcBuf,
-                   const MemcpyBuffer* dstBuf) {
+                   const MemcpyBuffer* dstBuf, const std::string& context = std::string()) {
     field(os, prefix, "testcase") << currentTestcaseName << "\n";
     field(os, prefix, "transport") << srcBuf->getBufferString() << " -> "
                                    << dstBuf->getBufferString() << "\n";
+    if (!context.empty()) {
+        field(os, prefix, "phase") << context << "\n";
+    }
     field(os, prefix, "src") << "host=" << endpointHost(srcBuf) << "  rank=" << verifyLinkId(srcBuf)
                              << "  BDF=" << endpointBdf(srcBuf) << "\n";
     field(os, prefix, "dst") << "host=" << endpointHost(dstBuf) << "  rank=" << verifyLinkId(dstBuf)
@@ -240,7 +258,8 @@ VerifyScan scanVerifiedBuffer(const MemcpyBuffer* srcBuf, const MemcpyBuffer* ve
                               HGdeviceptr buffer,
                               const unsigned int* hostPattern, const unsigned int* hostInitPattern,
                               unsigned long long numElements, unsigned int numPatternElements,
-                              unsigned long long listLimit, bool compareSource) {
+                              unsigned long long listLimit, bool compareSource,
+                              const std::function<void(const VerifyMismatch&)> &writeMismatch = {}) {
     VerifyScan scan;
     scan.haveInitPattern = hostInitPattern != nullptr;
     // The source is dropped from the comparison when it has no local mapping, when another rank owns
@@ -296,6 +315,7 @@ VerifyScan scanVerifiedBuffer(const MemcpyBuffer* srcBuf, const MemcpyBuffer* ve
             if (scan.listed.size() < listLimit) {
                 scan.listed.push_back(m);
             }
+            if (writeMismatch) writeMismatch(m);
         }
     }
     return scan;
@@ -327,7 +347,8 @@ std::string resolveDumpDir(const char* spec) {
 }
 
 // Timestamped, per-rank dump file name.
-std::string makeDumpPath(const std::string& dir, int ppuId, unsigned long long firstOffset) {
+std::string makeDumpPath(const std::string& dir, int ppuId, unsigned long long firstOffset,
+                         const std::string& dumpTag = std::string()) {
     char timestamp[32] = {0};
     std::time_t now = std::time(nullptr);
     std::tm local = {};
@@ -339,7 +360,8 @@ std::string makeDumpPath(const std::string& dir, int ppuId, unsigned long long f
 #ifdef MULTINODE
     name << "_rank" << worldRank;
 #endif
-    name << "_off" << firstOffset << "_" << timestamp << ".txt";
+    if (dumpTag.empty()) name << "_off" << firstOffset;
+    name << "_" << timestamp << dumpTag << ".txt";
     return name.str();
 }
 
@@ -490,6 +512,13 @@ void reportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
 
 }  // namespace
 
+unsigned int verifySourceSeed(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
+                              const std::shared_ptr<NodeHelper>& nodeHelper) {
+    if (nodeHelper->deferredVerification() == nullptr) return VERIFY_SRC_SEED;
+    return VERIFY_SRC_SEED ^ ((static_cast<unsigned int>(verifyLinkId(srcBuf)) + 1u) << 20) ^
+           ((static_cast<unsigned int>(verifyLinkId(dstBuf)) + 1u) << 12);
+}
+
 int verifyLinkId(const MemcpyBuffer* buf) {
     int rank = buf->getMPIRank();
     return rank >= 0 ? rank : buf->getBufferIdx();
@@ -521,4 +550,73 @@ void verifyReportPatternFailure(const MemcpyBuffer* owner, HGdeviceptr buffer,
     // Generated verification values have no independent source payload to compare.
     reportFailure(owner, owner, owner, buffer, hostPattern, nullptr,
                   numElements, numPatternElements, patternName, false);
+}
+
+std::string verifyFailureReport(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
+                                const MemcpyBuffer* verifiedBuf, const unsigned int* hostPattern,
+                                const unsigned int* hostInitPattern, unsigned long long numElements,
+                                unsigned int numPatternElements, const std::string& context,
+                                const std::string& dumpTag) {
+    HGdeviceptr buffer = verifiedBuf->getBuffer();
+    // Written on every failure, since that is when the detail is wanted; SAILBW_DUMP_PATH only
+    // selects a directory other than the current one.
+    const char* dumpSpec = getenv("SAILBW_DUMP_PATH");
+    if (dumpSpec == nullptr) {
+        dumpSpec = ".";
+    }
+    const unsigned long long listLimit = parseDumpSize();
+    const std::string path = makeDumpPath(resolveDumpDir(dumpSpec), verifyLinkId(verifiedBuf), 0, dumpTag);
+    std::ofstream file(path);
+    file << "# sailbandwidth data-verification mismatch dump\n";
+    writeIdentity(file, "# ", srcBuf, dstBuf, context);
+    field(file, "# ", "verified buffer") << (srcBuf == verifiedBuf ? "source" : "destination")
+                                        << ", owner rank " << verifyLinkId(verifiedBuf) << '\n';
+    unsigned long long written = 0;
+    const auto scan = scanVerifiedBuffer(srcBuf, verifiedBuf, buffer, hostPattern, hostInitPattern,
+                                         numElements, numPatternElements, std::min(listLimit, kDefaultDumpSize), true,
+        [&](const VerifyMismatch &m) {
+            if (written < listLimit) {
+                if (written == 0) file << "# offset(word) expected actual xor\n";
+                file << m.offset << " " << hex8(m.expected) << " " << hex8(m.actual) << " "
+                     << hex8(m.expected ^ m.actual) << '\n';
+                written++;
+            }
+        });
+    const char* const transientNote = "device check failed; host re-read found no mismatch (may be transient)";
+    if (scan.total == 0) {
+        field(file, "# ", "note") << transientNote << '\n';
+    } else {
+        writeStats(file, "# ", scan, numElements);
+        field(file, "# ", "shown above") << written << " of " << scan.total << " bad values\n";
+    }
+    file.flush();
+    file.close();
+    const bool dumpOk = file.good();
+    std::ostringstream report;
+    report << "Data verification FAILED\n";
+    writeIdentity(report, "  ", srcBuf, dstBuf, context);
+    field(report, "  ", "verified buffer") << (srcBuf == verifiedBuf ? "source" : "destination")
+                                          << ", owner rank " << verifyLinkId(verifiedBuf) << '\n';
+    if (scan.total == 0) {
+        field(report, "  ", "note") << transientNote << '\n';
+    } else {
+        field(report, "  ", "first bad offset") << scan.firstOffset << " (word) / "
+                                               << scan.firstOffset * sizeof(unsigned int) << " (byte)\n";
+        writeStats(report, "  ", scan, numElements);
+    }
+    if (verifiedBuf == dstBuf && faultMatchesLink(verifyLinkId(srcBuf), verifyLinkId(dstBuf))) {
+        field(report, "  ", "note") << "values corrupted by SAILBW_VERIFY (simulated fault)\n";
+    }
+    field(report, "  ", "dumped file") << env->getHostname() << ":" << path
+                                       << (dumpOk ? "\n" : scan.total == 0 ? " (FAILED to create or write)\n"
+                                                                           : " (FAILED to create or write; mismatch details follow)\n");
+    if (scan.total != 0) {
+        report << "  offset(word) expected actual xor\n";
+        for (const auto &m : scan.listed) {
+            report << "  " << m.offset << " " << hex8(m.expected) << " " << hex8(m.actual) << " "
+                   << hex8(m.expected ^ m.actual) << '\n';
+        }
+        field(report, "  ", "shown in log") << scan.listed.size() << " of " << scan.total << " bad values\n";
+    }
+    return report.str();
 }
