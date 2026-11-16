@@ -460,6 +460,59 @@ jobs:
             printf '| result | %s |\n' "${PUBLISH_RESULT}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+
+  upload_version:
+    name: Resolve upload version
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve Artifactory directory name
+        id: version
+        shell: bash
+        env:
+          LABEL: ${{ needs.prepare.outputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LABEL:-}" ]; then
+            echo "::error::the artifact label is empty; the prepare job did not export outputs.version"
+            exit 1
+          fi
+          # "/" in a branch name would split the version into nested directories, so it becomes
+          # "_" together with anything else outside [A-Za-z0-9._-].
+          ref_slug=$(printf '%s' "${REF_NAME:-unknown}" | sed -e 's/[^A-Za-z0-9._-]/_/g')
+          ref_slug=${ref_slug:-unknown}
+          # The timestamp is written without "-", e.g. 2026-11-16-1211 -> 202611161211.
+          stamp=$(printf '%s' "${LABEL}" | sed -e 's/-//g' -e 's/[^A-Za-z0-9._]/_/g')
+          # A directory name must not end with "." either.
+          version=$(printf 'comm.%s-%s' "${ref_slug}" "${stamp}" | sed -e 's/\.*$//')
+          if [ "${#version}" -gt 255 ]; then
+            echo "::error::upload version '${version}' exceeds 255 characters"
+            exit 1
+          fi
+          echo "upload version: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  upload:
+    name: Call upload artifact properties template
+    needs: [publish, upload_version]
+    uses: t-head/ci-infra/.github/workflows/upload-artifact-properties.yml@main
+    with:
+      artifact_name: ${{ needs.publish.outputs.artifact_name }}
+      # comm.<branch>-<run label>, e.g. comm.feat_add_upload-202611161211.
+      version: ${{ needs.upload_version.outputs.version }}
+      package_type: "binary"
+      package_name: "sailbandwidth"
+      package_version: "main"
+      template_repository: t-head/ci-infra
+      template_ref: main
+    secrets:
+      release_username: ${{ secrets.RELEASE_USERNAME }}
+      release_token: ${{ secrets.RELEASE_TOKEN }}
+
   summary:
     name: Build summary
     needs: [prepare, build, publish]
