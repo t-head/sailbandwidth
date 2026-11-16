@@ -20,6 +20,8 @@
 #include "output.h"
 #include "testcase.h"
 
+std::map<std::string, std::map<std::string, std::shared_ptr<PeerValueMatrix<double>>>> Testcase::globalTestCache;
+
 Testcase::Testcase(std::string key, std::string desc) :
     key(std::move(key)), desc(std::move(desc))
 {}
@@ -54,6 +56,10 @@ FilterResult Testcase::filterSupportsMulticast() {
     return FilterResult::waive("multicast is not supported on PPU");
 }
 
+FilterResult Testcase::filterSupportsTMA() {
+    return FilterResult::waive("TMA is not implemented on PPU");
+}
+
 #ifdef MULTINODE
 // Each MPI rank handles one PPU, so we simply have to check if we have more than 1 process
 FilterResult Testcase::filterHasMultiplePPUsMultinode() {
@@ -61,36 +67,43 @@ FilterResult Testcase::filterHasMultiplePPUsMultinode() {
 }
 #endif
 
+template<typename AlignedLatencyNode>
 void Testcase::latencyHelper(const MemcpyBuffer &dataBuffer, bool measureDeviceToDeviceLatency) {
-    uint64_t n_ptrs = dataBuffer.getBufferSize() / sizeof(struct LatencyNode);
+    uint64_t n_ptrs = dataBuffer.getBufferSize() / sizeof(AlignedLatencyNode);
 
     if (measureDeviceToDeviceLatency) {
         // For device-to-device latency, create and initialize pattern on device
         for (uint64_t i = 0; i < n_ptrs; i++) {
-            struct LatencyNode node;
-            size_t nextOffset = ((i + strideLen) % n_ptrs) * sizeof(struct LatencyNode);
+            AlignedLatencyNode alignedNode;
+            size_t nextOffset = ((i + strideLen) % n_ptrs) * sizeof(AlignedLatencyNode);
             // Set up pattern with device addresses
-            node.next = (struct LatencyNode*)(dataBuffer.getBuffer() + nextOffset);
-            HG_ASSERT(hgMemcpyHtoD(dataBuffer.getBuffer() + i*sizeof(struct LatencyNode),
-                                 &node, sizeof(struct LatencyNode)));
+            alignedNode.next = (AlignedLatencyNode *)(dataBuffer.getBuffer() + nextOffset);
+            HG_ASSERT(hgMemcpyHtoD(dataBuffer.getBuffer() + i*sizeof(AlignedLatencyNode),
+                                 &alignedNode, sizeof(AlignedLatencyNode)));
         }
     } else {
         // For host-device latency, initialize pattern with host addresses
-        struct LatencyNode* hostMem = (struct LatencyNode*)dataBuffer.getBuffer();
+        AlignedLatencyNode* hostMem = (AlignedLatencyNode*)dataBuffer.getBuffer();
         for (uint64_t i = 0; i < n_ptrs; i++) {
             hostMem[i].next = &hostMem[(i + strideLen) % n_ptrs];
         }
     }
 }
 
-void Testcase::allToOneHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead) {
+template void Testcase::latencyHelper<struct LatencyNode>(const MemcpyBuffer &dataBuffer, bool measureDeviceToDeviceLatency);
+template void Testcase::latencyHelper<struct TMALatencyNode>(const MemcpyBuffer &dataBuffer, bool measureDeviceToDeviceLatency);
+
+void Testcase::forEachAllToOneBufferPairing(unsigned long long size, MemcpyOperation &memcpyInstance, bool isAllToOne, allToOneOneToAllCallback callback) {
+    const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || gSettings.disableVm;
     const bool useSubReadCmd =
         !gSettings.disableVm &&
         (detectIcnRemoteType(deviceCount - 1) == sailbandwidthIcnRemoteType::Switch) &&
         (memcpyInstance.getP2PType() == P2PType::CE) &&
-        isRead &&
+        (memcpyInstance.ctxPreference == PREFER_DST_CONTEXT) &&
         (memcpyInstance.icnReadConfig.enableSplitSizeReadOptimize ||
          memcpyInstance.icnReadConfig.enableVpipeIdReadOptimize);
+
+    std::vector<unsigned long long> splitSizes;
     if (useSubReadCmd) {
         int maxSplitCount = PPU_ICN_LINK_PER_DIE();
         int splitCount = (size < maxSplitCount) ? static_cast<int>(size) : maxSplitCount;
@@ -101,7 +114,6 @@ void Testcase::allToOneHelper(unsigned long long size, MemcpyOperation &memcpyIn
         unsigned long long baseSplitSize = size / splitCount;
         unsigned long long remainder = size % splitCount;
 
-        std::vector<unsigned long long> splitSizes;
         for (int i = 0; i < splitCount; i++) {
             unsigned long long currentSplitSize = baseSplitSize;
             if (i == splitCount - 1) {
@@ -109,256 +121,101 @@ void Testcase::allToOneHelper(unsigned long long size, MemcpyOperation &memcpyIn
             }
             splitSizes.push_back(currentSplitSize);
         }
-
-        std::vector<std::vector<DeviceBufferVm*>> allSrcBuffers(deviceCount);
-        for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
-            for (int i = 0; i < splitCount; i++) {
-                allSrcBuffers[deviceId].push_back(new DeviceBufferVm(splitSizes[i], deviceId));
-            }
-        }
-
-        // Allocate all src nodes up front, re-use to avoid reallocation.
-        for (int dstDeviceId = 0; dstDeviceId < deviceCount; dstDeviceId++) {
-            std::vector<const MemcpyBuffer*> flatSrcBuffers;
-            std::vector<const MemcpyBuffer*> flatDstBuffers;
-
-            for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
-                if (srcDeviceId == dstDeviceId) {
-                    continue;
-                }
-
-                for (int i = 0; i < splitCount; i++) {
-                    // Use virtual memory to prevent read operations from being converted into write operations.
-                    DeviceBufferVm* dstBuffer = new DeviceBufferVm(splitSizes[i], dstDeviceId);
-
-                    if (!allSrcBuffers[srcDeviceId][i]->enableReadOnlyAccessFromPeer(*dstBuffer)) {
-                        delete dstBuffer;
-                        continue;
-                    }
-
-                    flatSrcBuffers.push_back(allSrcBuffers[srcDeviceId][i]);
-                    flatDstBuffers.push_back(dstBuffer);
-                }
-            }
-
-            // If no peer PPUs, skip measurements.
-            if (!flatSrcBuffers.empty()) {
-                // Swap dst and src for read tests so the copy is launched from the destination context.
-                bandwidthValues.value(0, dstDeviceId) = memcpyInstance.doMemcpy(flatDstBuffers, flatSrcBuffers);
-            }
-
-            for (auto node : flatDstBuffers) {
-                delete node;
-            }
-        }
-
-        for (auto& vec : allSrcBuffers) {
-            for (auto node : vec) {
-                delete node;
-            }
-        }
     } else {
-        const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || gSettings.disableVm;
-        std::vector<MemcpyBuffer*> allSrcBuffers;
+        splitSizes.push_back(size);
+    }
 
-        for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
-            if (isNonVmBuffer) {
-                allSrcBuffers.push_back(new DeviceBuffer(size, deviceId));
-            } else {
-                allSrcBuffers.push_back(new DeviceBufferVm(size, deviceId));
-            }
+    std::vector<std::vector<MemcpyBuffer*>> allBuffersPreallocated(deviceCount);
+
+    // allocate the all-group buffers up front, re-use to avoid reallocation
+    for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+        for (auto splitSize : splitSizes) {
+            allBuffersPreallocated[deviceId].push_back(isNonVmBuffer ?
+                static_cast<MemcpyBuffer*>(new DeviceBuffer(splitSize, deviceId)) :
+                static_cast<MemcpyBuffer*>(new DeviceBufferVm(splitSize, deviceId)));
         }
+    }
 
-        for (int dstDeviceId = 0; dstDeviceId < deviceCount; dstDeviceId++) {
-            std::vector<const MemcpyBuffer*> dstBuffers;
-            std::vector<const MemcpyBuffer*> srcBuffers;
+    for (int oneDeviceId = 0; oneDeviceId < deviceCount; oneDeviceId++) {
+        std::vector<const MemcpyBuffer*> oneBuffers;
+        std::vector<const MemcpyBuffer*> allBuffers;
 
-            for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
-                if (srcDeviceId == dstDeviceId) {
-                    continue;
-                }
+        for (int allDeviceId = 0; allDeviceId < deviceCount; allDeviceId++) {
+            if (allDeviceId == oneDeviceId) {
+                continue;
+            }
 
-                MemcpyBuffer* dstBuffer = isNonVmBuffer ? 
-                                            static_cast<MemcpyBuffer*>(new DeviceBuffer(size, dstDeviceId)) : 
-                                            static_cast<MemcpyBuffer*>(new DeviceBufferVm(size, dstDeviceId));
+            for (int i = 0; i < splitSizes.size(); i++) {
+                MemcpyBuffer* oneBuffer = isNonVmBuffer ?
+                    static_cast<MemcpyBuffer*>(new DeviceBuffer(splitSizes[i], oneDeviceId)) :
+                    static_cast<MemcpyBuffer*>(new DeviceBufferVm(splitSizes[i], oneDeviceId));
+                MemcpyBuffer* allBuffer = allBuffersPreallocated[allDeviceId][i];
+                MemcpyBuffer* srcBuffer = isAllToOne ? allBuffer : oneBuffer;
+                MemcpyBuffer* dstBuffer = isAllToOne ? oneBuffer : allBuffer;
 
                 bool peerAccessEnabled = false;
                 if (isNonVmBuffer) {
-                    auto* srcDeviceBuffer = static_cast<DeviceBuffer*>(allSrcBuffers[srcDeviceId]);
-                    auto* dstDeviceBuffer = static_cast<DeviceBuffer*>(dstBuffer);
-                    peerAccessEnabled = srcDeviceBuffer->enablePeerAccess(*dstDeviceBuffer);
+                    peerAccessEnabled = static_cast<DeviceBuffer*>(srcBuffer)->enablePeerAccess(
+                        *static_cast<DeviceBuffer*>(dstBuffer));
                 } else {
-                    auto* srcDeviceBuffer = static_cast<DeviceBufferVm*>(allSrcBuffers[srcDeviceId]);
-                    auto* dstDeviceBuffer = static_cast<DeviceBufferVm*>(dstBuffer);
-                    peerAccessEnabled = srcDeviceBuffer->enableReadOnlyAccessFromPeer(*dstDeviceBuffer);
+                    // Use virtual memory to prevent read operations from being converted into write operations.
+                    peerAccessEnabled = static_cast<DeviceBufferVm*>(srcBuffer)->enableReadOnlyAccessFromPeer(
+                        *static_cast<DeviceBufferVm*>(dstBuffer));
                 }
 
                 if (!peerAccessEnabled) {
-                    delete dstBuffer;
+                    delete oneBuffer;
                     continue;
                 }
 
-                srcBuffers.push_back(allSrcBuffers[srcDeviceId]);
-                dstBuffers.push_back(dstBuffer);
-            }
-
-            if (!srcBuffers.empty()) {
-                if(isRead) {
-                    bandwidthValues.value(0, dstDeviceId) = memcpyInstance.doMemcpy(dstBuffers, srcBuffers);
-                } else {
-                    bandwidthValues.value(0, dstDeviceId) = memcpyInstance.doMemcpy(srcBuffers, dstBuffers);
-                }
-            }
-
-            for (auto node : dstBuffers) {
-                delete node;
+                allBuffers.push_back(allBuffer);
+                oneBuffers.push_back(oneBuffer);
             }
         }
+        // If no peer PPUs, skip measurements.
+        if (!allBuffers.empty()) {
+            callback(oneDeviceId, allBuffers, oneBuffers);
+        }
 
-        for (auto node : allSrcBuffers) {
+        for (auto node : oneBuffers) {
             delete node;
         }
     }
+
+    for (auto& buffers : allBuffersPreallocated) {
+        for (auto node : buffers) {
+            delete node;
+        }
+    }
+}
+
+void Testcase::allToOneHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues) {
+    forEachAllToOneBufferPairing(size, memcpyInstance, true, [&](int oneDeviceId,
+                                            std::vector<const MemcpyBuffer*>& allBuffers,
+                                            std::vector<const MemcpyBuffer*>& oneBuffers) {
+        if (memcpyInstance.ctxPreference == PREFER_DST_CONTEXT) {
+            // Do a read from each PPU in the all group, by reading from the one PPU
+            bandwidthValues.value(0, oneDeviceId) = memcpyInstance.doMemcpy(oneBuffers, allBuffers);
+        } else {
+            // Do a write from each PPU in the all group, by writing to the one PPU
+            bandwidthValues.value(0, oneDeviceId) = memcpyInstance.doMemcpy(allBuffers, oneBuffers);
+        }
+    });
     recordStability(bandwidthValues, memcpyInstance);
 }
 
-void Testcase::oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead) {
-    const bool useSubReadCmd =
-        !gSettings.disableVm &&
-        (detectIcnRemoteType(deviceCount - 1) == sailbandwidthIcnRemoteType::Switch) &&
-        (memcpyInstance.getP2PType() == P2PType::CE) &&
-        isRead &&
-        (memcpyInstance.icnReadConfig.enableSplitSizeReadOptimize ||
-         memcpyInstance.icnReadConfig.enableVpipeIdReadOptimize);
-    if (useSubReadCmd) {
-        int maxSplitCount = PPU_ICN_LINK_PER_DIE();
-        int splitCount = (size < maxSplitCount) ? static_cast<int>(size) : maxSplitCount;
-
-        if (splitCount == 0) {
-            return;
+void Testcase::oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues) {
+    forEachAllToOneBufferPairing(size, memcpyInstance, false, [&](int oneDeviceId,
+                                            std::vector<const MemcpyBuffer*>& allBuffers,
+                                            std::vector<const MemcpyBuffer*>& oneBuffers) {
+        if (memcpyInstance.ctxPreference == PREFER_DST_CONTEXT) {
+            // Do a read from the PPU in the one group, by reading from each PPU in the all group
+            bandwidthValues.value(0, oneDeviceId) = memcpyInstance.doMemcpy(allBuffers, oneBuffers);
+        } else {
+            // Do a write from the PPU in the one group, by writing to each PPU in the all group
+            bandwidthValues.value(0, oneDeviceId) = memcpyInstance.doMemcpy(oneBuffers, allBuffers);
         }
-
-        unsigned long long baseSplitSize = size / splitCount;
-        unsigned long long remainder = size % splitCount;
-
-        std::vector<unsigned long long> splitSizes;
-        for (int i = 0; i < splitCount; i++) {
-            unsigned long long currentSplitSize = baseSplitSize;
-            if (i == splitCount - 1) {
-                currentSplitSize += remainder;
-            }
-            splitSizes.push_back(currentSplitSize);
-        }
-
-        std::vector<std::vector<DeviceBufferVm*>> allDstBuffers(deviceCount);
-
-        // allocate all src nodes up front, re-use to avoid reallocation
-        for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
-            for (int i = 0; i < splitCount; i++) {
-                allDstBuffers[deviceId].push_back(new DeviceBufferVm(splitSizes[i], deviceId));
-            }
-        }
-        
-        for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
-            std::vector<const MemcpyBuffer*> flatSrcBuffers;
-            std::vector<const MemcpyBuffer*> flatDstBuffers;
-
-            for (int dstDeviceId = 0; dstDeviceId < deviceCount; dstDeviceId++) {
-                if (srcDeviceId == dstDeviceId) {
-                    continue;
-                }
-
-                for (int i = 0; i < splitCount; i++) {
-                    DeviceBufferVm* srcBuffer = new DeviceBufferVm(splitSizes[i], srcDeviceId);
-                    if (!srcBuffer->enableReadOnlyAccessFromPeer(*allDstBuffers[dstDeviceId][i])) {
-                        delete srcBuffer;
-                        continue;
-                    }
-
-                    flatSrcBuffers.push_back(srcBuffer);
-                    flatDstBuffers.push_back(allDstBuffers[dstDeviceId][i]);
-                }
-            }
-            // If no peer PPUs, skip measurements.
-            if (!flatSrcBuffers.empty()) {
-                // swap dst and src for read tests
-                bandwidthValues.value(0, srcDeviceId) = memcpyInstance.doMemcpy(flatDstBuffers, flatSrcBuffers);
-            }
-
-            for (auto node : flatSrcBuffers) {
-                delete node;
-            }
-        }
-
-        for (auto& vec : allDstBuffers) {
-            for (auto node : vec) {
-                delete node;
-            }
-        }
-    } else {
-        const bool isNonVmBuffer = memcpyInstance.getP2PType() == P2PType::SM || gSettings.disableVm;
-        std::vector<MemcpyBuffer*> allDstBuffers;
-
-        // allocate all dst nodes up front, re-use to avoid reallocation
-        for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
-            if (isNonVmBuffer) {
-                allDstBuffers.push_back(new DeviceBuffer(size, deviceId));
-            } else {
-                allDstBuffers.push_back(new DeviceBufferVm(size, deviceId));
-            }
-        }
-
-        for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
-            std::vector<const MemcpyBuffer*> dstBuffers;
-            std::vector<const MemcpyBuffer*> srcBuffers;
-
-            for (int dstDeviceId = 0; dstDeviceId < deviceCount; dstDeviceId++) {
-                if (srcDeviceId == dstDeviceId) {
-                    continue;
-                }
-
-                MemcpyBuffer* srcBuffer = isNonVmBuffer ? 
-                                            static_cast<MemcpyBuffer*>(new DeviceBuffer(size, srcDeviceId)) : 
-                                            static_cast<MemcpyBuffer*>(new DeviceBufferVm(size, srcDeviceId));
-
-                bool peerAccessEnabled = false;
-                if (isNonVmBuffer) {
-                    auto* srcDeviceBuffer = static_cast<DeviceBuffer*>(srcBuffer);
-                    auto* dstDeviceBuffer = static_cast<DeviceBuffer*>(allDstBuffers[dstDeviceId]);
-                    peerAccessEnabled = srcDeviceBuffer->enablePeerAccess(*dstDeviceBuffer);
-                } else {
-                    auto* srcDeviceBuffer = static_cast<DeviceBufferVm*>(srcBuffer);
-                    auto* dstDeviceBuffer = static_cast<DeviceBufferVm*>(allDstBuffers[dstDeviceId]);
-                    peerAccessEnabled = srcDeviceBuffer->enableReadOnlyAccessFromPeer(*dstDeviceBuffer);
-                }
-
-                if (!peerAccessEnabled) {
-                    delete srcBuffer;
-                    continue;
-                }
-
-                srcBuffers.push_back(srcBuffer);
-                dstBuffers.push_back(allDstBuffers[dstDeviceId]);
-            }
-            // If no peer PPUs, skip measurements.
-            if ( !srcBuffers.empty() ) {
-                if (isRead) {
-                    // swap dst and src for read tests
-                    bandwidthValues.value(0, srcDeviceId) = memcpyInstance.doMemcpy(dstBuffers, srcBuffers);
-                } else {
-                    bandwidthValues.value(0, srcDeviceId) = memcpyInstance.doMemcpy(srcBuffers, dstBuffers);
-                }
-            }
-
-            for (auto node : srcBuffers) {
-                delete node;
-            }
-        }
-
-        for (auto node : allDstBuffers) {
-            delete node;
-        }
-    }
+    });
     recordStability(bandwidthValues, memcpyInstance);
 }
 

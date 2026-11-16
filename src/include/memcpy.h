@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * Modifications Copyright (c) 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -23,6 +23,7 @@
 #include "inline_common.h"
 #include "ppu_common.h"
 #include "common.h"
+#include "kernels.cuh"
 
 class MemcpyBuffer {
  protected:
@@ -98,31 +99,6 @@ class DeviceBufferVm : public MemcpyBuffer {
     bool enableReadOnlyAccessFromPeer(const DeviceBufferVm &peerBuffer);
 };
 
-// Describe attributes of a single memcpy operation
-class MemcpyDescriptor {
- public:
-    const MemcpyBuffer* dstBuffer;
-    const MemcpyBuffer* srcBuffer;
-    HGstream mainstream;
-    HGstream die0stream;
-    HGstream die1stream;
-    size_t copySize;
-    unsigned long long loopCount;
-    HGdeviceptr verificationBuffer = 0;
-    
-    // icn read
-    IcnReadConfig icnReadConfig;
-
-    MemcpyDescriptor(const MemcpyBuffer* dstBuffer,
-                     const MemcpyBuffer* srcBuffer,
-                     HGstream mainstream,
-                     HGstream die0stream,
-                     HGstream die1stream,
-                     size_t copySize,
-                     unsigned long long loopCount,
-                     const IcnReadConfig& icnReadConfig);
-};
-
 // Specifies the preferred node's context to do the operation from
 // It's only a preference because if the preferred node is a HostBuffer, it has no context and will fall back to the other node
 enum ContextPreference {
@@ -141,6 +117,7 @@ enum P2PType {
         SM,
         MULTI_CAST,
         SM_SPLIT,
+        TMA,
 };
 
 class MemcpyDispatchInfo {
@@ -330,6 +307,17 @@ class MemcpyInitiatorSMSplitWarp : public MemcpyInitiatorSM {
     double getAdjustedBandwidth(double bandwidth);
 };
 
+class MemcpyInitiatorTMA : public MemcpyInitiator {
+ public:
+    MemcpyInitiatorTMA() : MemcpyInitiator(P2PType::TMA) {}
+
+    size_t memcpyFunc(MemcpyDescriptor &memcpyDescriptor, MemcpyDispatchInfo* info = nullptr) override;
+    size_t getAdjustedCopySize(size_t src_size, size_t dst_size, HGstream stream, bool use_bulk) override;
+    void memsetPattern(MemcpyDispatchInfo &info) const override;
+    void memcmpPattern(MemcpyDispatchInfo &info) const override;
+    double getAdjustedBandwidth(double bandwidth) override;
+};
+
 // Abstraction of a memory Operation.
 class MemoryOperation {
  public:
@@ -348,6 +336,8 @@ class MemcpyOperation : public MemoryOperation {
             VECTOR_BW,         // Return bandwidths of each copy separately
     };
 
+    ContextPreference ctxPreference;
+
  private:
     unsigned long long loopCount;
     double worstCoeffOfVariation_ = -1.0;
@@ -358,7 +348,6 @@ class MemcpyOperation : public MemoryOperation {
 
     std::shared_ptr<MemcpyInitiator> memcpyInitiator;
     std::shared_ptr<NodeHelper> nodeHelper;
-    ContextPreference ctxPreference;
     BandwidthValue bandwidthValue;
 
  public:
@@ -382,7 +371,7 @@ class MemPtrChaseOperation : public MemoryOperation {
  public:
     MemPtrChaseOperation(unsigned long long loopCount);
     ~MemPtrChaseOperation() = default;
-    double doPtrChase(const int srcId, const MemcpyBuffer &peerBuffer);
+    double doPtrChase(const int srcId, const MemcpyBuffer &peerBuffer, PtrChasingKernel kernel);
  private:
     unsigned long long loopCount;
     unsigned int smCount;

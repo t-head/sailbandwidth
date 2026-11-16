@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "common.h"
 #include "ppu_common.h"
 
 #ifdef USE_VPIPEID

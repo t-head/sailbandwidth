@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * Modifications Copyright (c) 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -57,67 +57,77 @@ std::unique_ptr<Environment> env;
 // Define testcases here
 std::vector<Testcase*> createNodeTestcases() {
     std::vector<Testcase*> tests = {
-        new HostToDeviceCE(),
-        new DeviceToHostCE(),
-        new HostToDeviceBidirCE(),
-        new DeviceToHostBidirCE(),
-        new DeviceToDeviceReadCE(),
-        new DeviceToDeviceWriteCE(),
-        new DeviceToDeviceBidirReadCE(),
-        new DeviceToDeviceBidirWriteCE(),
-        new AllToHostCE(),
-        new AllToHostBidirCE(),
-        new HostToAllCE(),
-        new HostToAllBidirCE(),
-        new AllToOneWriteCE(),
-        new AllToOneReadCE(),
-        new OneToAllWriteCE(),
-        new OneToAllReadCE(),
-        new HostToDeviceSM(),
-        new DeviceToHostSM(),
-        new HostToDeviceBidirSM(),
-        new DeviceToHostBidirSM(),
-        new DeviceToDeviceReadSM(),
-        new DeviceToDeviceWriteSM(),
-        new DeviceToDeviceBidirReadSM(),
-        new DeviceToDeviceBidirWriteSM(),
-        new AllToHostSM(),
-        new AllToHostBidirSM(),
-        new HostToAllSM(),
-        new HostToAllBidirSM(),
-        new AllToOneWriteSM(),
-        new AllToOneReadSM(),
-        new OneToAllWriteSM(),
-        new OneToAllReadSM(),
+        new HostDeviceTransfer(CopyInitiator::CE, Direction::HostToDevice),
+        new HostDeviceTransfer(CopyInitiator::CE, Direction::DeviceToHost),
+        new HostDeviceBidirTransfer(CopyInitiator::CE, Direction::HostToDevice),
+        new HostDeviceBidirTransfer(CopyInitiator::CE, Direction::DeviceToHost),
+        new DeviceToDeviceTransfer(CopyInitiator::CE, AccessType::Read),
+        new DeviceToDeviceTransfer(CopyInitiator::CE, AccessType::Write),
+        new DeviceToDeviceBidirTransfer(CopyInitiator::CE, AccessType::Read),
+        new DeviceToDeviceBidirTransfer(CopyInitiator::CE, AccessType::Write),
+        new AllToHostTransfer(CopyInitiator::CE),
+        new AllToHostBidirTransfer(CopyInitiator::CE),
+        new HostToAllTransfer(CopyInitiator::CE),
+        new HostToAllBidirTransfer(CopyInitiator::CE),
+        new AllToOneTransfer(CopyInitiator::CE, AccessType::Write),
+        new AllToOneTransfer(CopyInitiator::CE, AccessType::Read),
+        new OneToAllTransfer(CopyInitiator::CE, AccessType::Write),
+        new OneToAllTransfer(CopyInitiator::CE, AccessType::Read),
+        new HostDeviceTransfer(CopyInitiator::SM, Direction::HostToDevice),
+        new HostDeviceTransfer(CopyInitiator::SM, Direction::DeviceToHost),
+        new HostDeviceBidirTransfer(CopyInitiator::SM, Direction::HostToDevice),
+        new HostDeviceBidirTransfer(CopyInitiator::SM, Direction::DeviceToHost),
+        new DeviceToDeviceTransfer(CopyInitiator::SM, AccessType::Read),
+        new DeviceToDeviceTransfer(CopyInitiator::SM, AccessType::Write),
+        new DeviceToDeviceBidirTransfer(CopyInitiator::SM, AccessType::Read),
+        new DeviceToDeviceBidirTransfer(CopyInitiator::SM, AccessType::Write),
+        new AllToHostTransfer(CopyInitiator::SM),
+        new AllToHostBidirTransfer(CopyInitiator::SM),
+        new HostToAllTransfer(CopyInitiator::SM),
+        new HostToAllBidirTransfer(CopyInitiator::SM),
+        new AllToOneTransfer(CopyInitiator::SM, AccessType::Write),
+        new AllToOneTransfer(CopyInitiator::SM, AccessType::Read),
+        new OneToAllTransfer(CopyInitiator::SM, AccessType::Write),
+        new OneToAllTransfer(CopyInitiator::SM, AccessType::Read),
         new HostDeviceLatencySM(),
         new DeviceToDeviceLatencySM(),
-        new DeviceLocalCopy(),
+        new DeviceToDeviceTransfer(CopyInitiator::TMA, AccessType::Read),
+        new DeviceToDeviceTransfer(CopyInitiator::TMA, AccessType::Write),
+        new DeviceToDeviceBidirTransfer(CopyInitiator::TMA, AccessType::Read),
+        new DeviceToDeviceBidirTransfer(CopyInitiator::TMA, AccessType::Write),
+        new DeviceLocalCopyTransfer(CopyInitiator::CE),
+        new DeviceLocalCopyTransfer(CopyInitiator::SM),
+        new DeviceLocalReadSM(),
+        new DeviceLocalWriteSM(),
+        new DeviceToDeviceLatencyTMA(),
+        new DeviceLocalCopyTransfer(CopyInitiator::TMA),
     };
 #ifdef MULTINODE
     // Multinode testcases are only listed when running with more than one process
     if (env->getSize() > 1) {
         tests.insert(tests.end(), {
-            new MultinodeDeviceToDeviceReadCE(),
-            new MultinodeDeviceToDeviceWriteCE(),
-            new MultinodeDeviceToDeviceBidirReadCE(),
-            new MultinodeDeviceToDeviceBidirWriteCE(),
-            new MultinodeDeviceToDeviceReadSM(),
-            new MultinodeDeviceToDeviceWriteSM(),
-            new MultinodeDeviceToDeviceBidirReadSM(),
-            new MultinodeDeviceToDeviceBidirWriteSM(),
+            new MultinodeDeviceToDeviceTransfer(CopyInitiator::CE, AccessType::Read),
+            new MultinodeDeviceToDeviceTransfer(CopyInitiator::CE, AccessType::Write),
+            new MultinodeDeviceToDeviceBidirTransfer(CopyInitiator::CE, AccessType::Read),
+            new MultinodeDeviceToDeviceBidirTransfer(CopyInitiator::CE, AccessType::Write),
+            new MultinodeDeviceToDeviceTransfer(CopyInitiator::SM, AccessType::Read),
+            new MultinodeDeviceToDeviceTransfer(CopyInitiator::SM, AccessType::Write),
+            new MultinodeDeviceToDeviceBidirTransfer(CopyInitiator::SM, AccessType::Read),
+            new MultinodeDeviceToDeviceBidirTransfer(CopyInitiator::SM, AccessType::Write),
+            new MultinodeDeviceToDeviceTransfer(CopyInitiator::TMA, AccessType::Read),
+            new MultinodeDeviceToDeviceTransfer(CopyInitiator::TMA, AccessType::Write),
+            new MultinodeDeviceToDeviceBidirTransfer(CopyInitiator::TMA, AccessType::Read),
+            new MultinodeDeviceToDeviceBidirTransfer(CopyInitiator::TMA, AccessType::Write),
             new MultinodeAllToOneWriteSM(),
             new MultinodeAllFromOneReadSM(),
             // new MultinodeBroadcastOneToAllSM(),
             // new MultinodeBroadcastAllToAllSM(),
             // new MultinodeBisectWriteCE(),
+            // new MultinodeMulticastFabricPut(CopyInitiator::SM),
+            // new MultinodeMulticastFabricPut(CopyInitiator::TMA),
         });
     }
 #endif
-    tests.insert(tests.end(), {
-        new DeviceLocalCopySM(),
-        new DeviceLocalReadSM(),
-        new DeviceLocalWriteSM(),
-    });
     return tests;
 }
 
@@ -212,7 +222,8 @@ void runTestcase(std::vector<Testcase*> &testcases, const std::string &testcaseI
         currentTestcaseName = test->testKey();
 
         // Run the testcase
-        if (test->testKey() == "host_device_latency_sm" || test->testKey() == "device_to_device_latency_sm") {
+        if (test->testKey() == "host_device_latency_sm" || test->testKey() == "device_to_device_latency_sm" ||
+            test->testKey() == "device_to_device_latency_tma") {
             // use fixed-size buffer for latency tests
             test->run(2 * _MiB, gSettings.loopCount);
         } else {
@@ -353,6 +364,7 @@ int main(int argc, char **argv) {
         .help("Iterations of the benchmark [default: " + std::to_string(kDefaultAverageLoopCount) + "]")
         .store_into(averageLoopCountArg);
     program.add_argument("-m", "--useMean").help("Use mean instead of median for results").store_into(gSettings.useMean);
+
     program.add_argument("--nBlocks").help("Block count for SM bulk/striding copy and pointer-chase tests [default: -1, automatic]").store_into(gSettings.nBlocks);
     program.add_argument("--nThreads").help("Threads per block for SM bulk/striding copy [default: -1, automatic]").store_into(gSettings.nThreads);
     program.add_argument("--displayUR").help("Show utilization ratio matrices in D2D Tests").store_into(gSettings.displayUR);
@@ -377,6 +389,11 @@ int main(int argc, char **argv) {
 
     program.add_argument("--loopCount").help("Iterations of memcpy to be performed within a test sample")
         .store_into(loopCountArg).hidden();
+    program.add_argument("--disablePerformanceCache")
+        .help("Disable bidirectional result cache (enabled by default)")
+        .flag()
+        .store_into(gSettings.disablePerformanceCache)
+        .hidden();
     program.add_argument("--perfFormatter").help("Use perf formatter prefix (&&&& PERF) in output")
         .store_into(gSettings.perfFormatter).hidden();
     program.add_argument("--useNormalCopy").help("Use normal copy for sm test").store_into(gSettings.useNormalCopy).hidden();

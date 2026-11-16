@@ -48,8 +48,14 @@ struct TestSettings {
     bool verbose = false;
     bool skipVerification = false;
     bool disableAffinity = false;
+    bool disablePerformanceCache = false;
     bool useMean = false;
     bool useHugePages = false;
+
+    // Convenience accessor for cache (inverted for backward compat)
+    bool performanceCacheEnabled() const {
+        return !disablePerformanceCache;
+    }
 
     // Output format (string-based, validated after parsing)
     std::string outputFormat = "text";

@@ -19,8 +19,7 @@
 #ifndef KERNELS_CUH_
 #define KERNELS_CUH_
 
-#include "memcpy.h"
-#include "ppu_common.h"
+#include "common.h"
 
 const unsigned long long DEFAULT_SPIN_KERNEL_TIMEOUT_MS = 10000ULL;   // 10 seconds
 
@@ -31,11 +30,22 @@ HGresult verifyWriteOnlyKernel(HGstream stream, HGdeviceptr dstBuffer, size_t nu
                                 HGdeviceptr d_errorCount);
 size_t copyKernel(MemcpyDescriptor &desc);
 size_t copyKernelSplitWarp(MemcpyDescriptor &desc);
+size_t copyKernelTMA(MemcpyDescriptor &desc);
 size_t multicastCopy(HGdeviceptr dstBuffer, HGdeviceptr srcBuffer, size_t size, HGstream stream, unsigned long long loopCount);
 HGresult spinKernel(volatile int *latch, HGstream mainstream, HGstream die0stream, HGstream die1stream, unsigned long long timeoutMs = DEFAULT_SPIN_KERNEL_TIMEOUT_MS);
 HGresult spinKernelMultistage(volatile int *latch1, volatile int *latch2, HGstream mainstream, HGstream die0stream, HGstream die1stream, unsigned long long timeoutMs = DEFAULT_SPIN_KERNEL_TIMEOUT_MS);
 void preloadKernels(int deviceCount);
-double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned long long latencyMemAccessCnt, unsigned smCount);
+
+using PtrChasingKernel = void (*)(HGstream stream, void* data, size_t size,
+                                 unsigned int accesses, unsigned int targetBlock, unsigned int smCount);
+
+void launchPtrChasingKernelSM(HGstream stream, void* data, size_t size,
+                             unsigned int accesses, unsigned int targetBlock, unsigned int smCount);
+void launchPtrChasingKernelTMA(HGstream stream, void* data, size_t size,
+                              unsigned int accesses, unsigned int targetBlock, unsigned int smCount);
+
+double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned long long latencyMemAccessCnt,
+                            unsigned smCount, PtrChasingKernel kernel);
 HGresult memsetKernel(HGstream stream, HGdeviceptr buffer, HGdeviceptr pattern, unsigned long long num_elements, unsigned int num_pattern_elements);
 HGresult memcmpKernel(HGstream stream, HGdeviceptr buffer, HGdeviceptr pattern, unsigned long long num_elements, unsigned int num_pattern_elements, HGdeviceptr errorFlag);
 HGresult multicastMemcmpKernel(HGstream stream, HGdeviceptr buffer, HGdeviceptr pattern, unsigned long long num_elements, unsigned int num_pattern_elements, HGdeviceptr errorFlag);
