@@ -1,17 +1,25 @@
 name: build_artifactory
 
-# Build sailbandwidth distribution tarballs for every supported OS / HGGCRT combination
-# inside the matching docker image and publish them as this repository's own Actions
-# artifacts:
+# Build sailbandwidth release packages for every supported OS / HGGCRT combination inside the
+# matching docker image, keep one Actions artifact per combination and transfer every one of
+# them back to the internal artifact server:
 #
-#   comm_internal/<pkg_name>.tar.gz
-#   comm_release/<pkg_name>.tar.gz
+#   <pkg_name>                                 (Actions artifact, always a zip)
+#     <pkg_name>.tar.gz                        (the whole release package, at the zip top level)
 #
-# Each matrix entry uploads its own artifact; the publish job merges them into a single
- # "sailbandwidth-tarballs-<ref>-<label>" artifact, where <ref> is the branch or tag that
-# triggered the run (characters other than [A-Za-z0-9._-] become "-") and <label> is the
-# UTC+8 "YYYY-MM-DD-HHmm" timestamp shown in the run summary. Nothing is uploaded to an
-# external server, so no Artifactory credentials are required.
+# <pkg_name> is sailbandwidth_hggcrt<12|13>_<os>, so the OS and the runtime of a download are
+# readable from the artifact name alone. The rows are deliberately not merged: they differ in
+# toolchain and runtime ABI, and a consumer picks exactly one of them.
+#
+# The transfer back is one call per row to t-head/ci-infra's upload-artifact-properties workflow,
+# which publishes the row artifact as the zip it already is, so nothing is packed a second time.
+# The artifact name carries no run suffix, so the file name is stable across runs and a re-run of
+# one slot replaces that zip instead of leaving a second one behind:
+#   github_generic/nightly/<owner>/<repo>/comm.<ref>-<stamp>/<pkg_name>.zip
+# Every row of one run shares that version directory, so a consumer that knows the ref and the
+# label can build the URL directly; the rows differ by file name and by the os / runtime
+# properties set on each item, and the run id / attempt travel as item properties too. Only that
+# job needs secrets (RELEASE_USERNAME / RELEASE_TOKEN); the build jobs themselves need none.
 #
 # Each matrix entry calls one of the tar build scripts in .github/workflows/scripts:
 #   hggcrt 12 -> sailbandwidth_hggcrt12_tar_build.sh
@@ -28,22 +36,27 @@ name: build_artifactory
 # /workspace/source, the layout the build scripts already assume, so no internal k8s cluster,
 # NAS mount or scheduler worker pod is involved.
 #
-# The artifact label defaults to a UTC+8 YYYY-MM-DD-HHmm timestamp shared by every job of
-# one run; it names the merged artifact and tags the run summary.
-#
-# No repository / organization secrets are needed.
+# The artifact label is the UTC+8 YYYY-MM-DD-1900 nightly slot of a scheduled run, and a nightly
+# run also builds the default-branch commit as of that 19:00 timestamp: a queued-late run still
+# produces the slot's code and a predictable upload path. Push and manual runs are not that slot
+# and keep their real YYYY-MM-DD-HHmm start time and their triggering commit, so two builds of
+# one day never share a version; artifact_version overrides the label.
 
 on:
-  # Nightly artifact build at 21:00 UTC+8 (13:00 UTC; GitHub cron is always UTC). GitHub only
+  # Nightly artifact build at 19:00 UTC+8 (11:00 UTC; GitHub cron is always UTC). GitHub only
   # picks schedule triggers up from the default branch, so this stays dormant until the file
-  # is merged there.
+  # is merged there. The scheduler queues runs instead of starting them on the minute, so the
+  # build really starts a few minutes after 19:00; the label and the built commit are the slot's.
   schedule:
-    - cron: '0 13 * * *'
+    - cron: '0 11 * * *'
   # Build on every push to the default branch. `paths` keeps ordinary source commits from
   # burning a full matrix build; the nightly schedule above is what produces regular artifacts.
   push:
     branches:
       - main
+      # Temporary: validation trigger for the branch that still carries this file, removed again
+      # before the merge so only the default branch builds afterwards.
+      - feat/build_artifacts_transfer_back
     paths:
       - .github/workflows/build-artifactory-ppu.yml
       - .github/workflows/scripts/sailbandwidth_hggcrt12_tar_build.sh
@@ -61,7 +74,7 @@ on:
         type: string
         default: '["12","13"]'
       artifact_version:
-        description: 'Label shown in the run summary; empty means the UTC+8 "YYYY-MM-DD-HHmm" timestamp of this run'
+        description: 'Label used for the upload version and the run summary; empty means the UTC+8 "YYYY-MM-DD-1900" slot for a scheduled run and the actual "YYYY-MM-DD-HHmm" start time otherwise'
         required: false
         type: string
         default: ''
@@ -78,8 +91,9 @@ on:
 
 permissions:
   contents: read
-  # Merging the per-matrix artifacts lists them through the Actions API, so the scope has to
-  # be granted explicitly; an explicit permissions block sets everything else to none.
+  # The build jobs upload through the Actions artifact API and the transfer-back job downloads
+  # through it again, so the scope is granted explicitly; an explicit permissions block sets
+  # everything else to none.
   actions: read
 
 concurrency:
@@ -100,6 +114,12 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       version: ${{ steps.matrix.outputs.version }}
+      # The two halves of the upload destination, resolved once here so every row and the run
+      # summary agree on them.
+      ref_slug: ${{ steps.matrix.outputs.ref_slug }}
+      upload_stamp: ${{ steps.matrix.outputs.upload_stamp }}
+      # Commit the build checks out; empty for push and dispatch, which build the triggered commit.
+      slot_commit: ${{ steps.matrix.outputs.slot_commit }}
       buildable: ${{ steps.matrix.outputs.buildable }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
     steps:
@@ -190,20 +210,60 @@ jobs:
               return normalized
 
 
-          def resolve_version(raw):
-              # The value ends up in the run summary, so keep it to a single safe token.
+          def resolve_slot(now):
+              # The nightly slot is 19:00 UTC+8. GitHub only ever queues a slot late, never early, so
+              # a run that starts before 19:00 belongs to the previous day's slot.
+              day = now if now.hour >= 19 else now - timedelta(days=1)
+              return day.replace(hour=19, minute=0, second=0, microsecond=0)
+
+
+          def resolve_version(raw, event_name):
+              # The value names the upload directory, so keep it to a single safe token.
               if raw:
                   if not re.fullmatch(PATH_PATTERN, raw):
                       fail("artifact_version must contain only letters, digits and . _ + -")
                   return raw
-              # One label per run, taken from a single UTC+8 timestamp so every job of the run
-              # reports the same value.
-              return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d-%H%M")
+              now = datetime.now(timezone(timedelta(hours=8)))
+              if event_name == "schedule":
+                  # Label the slot instead of the moment this job happened to run, so the upload
+                  # path of a night does not move with the scheduler delay.
+                  return resolve_slot(now).strftime("%Y-%m-%d-1900")
+              # A push or a manual dispatch is not the nightly slot, so the real start time tells
+              # two builds of the same day apart.
+              return now.strftime("%Y-%m-%d-%H%M")
+
+
+          def resolve_slot_commit(slot_start):
+              # A delayed run must still build the code as of the slot, not whatever was pushed
+              # while it queued, so the default-branch commit at the slot is resolved explicitly.
+              for revision in ("origin/main", "HEAD"):
+                  try:
+                      found = subprocess.run(
+                          ["git", "-C", str(SOURCE_DIR), "rev-list", "-1",
+                           f"--before={slot_start.isoformat()}", revision],
+                          check=True, capture_output=True, text=True).stdout.strip()
+                  except (subprocess.CalledProcessError, FileNotFoundError):
+                      continue
+                  if found:
+                      return found
+              print("::warning::could not resolve the default-branch commit of the slot; "
+                    "building the commit that triggered the run", flush=True)
+              return ""
 
 
           selected_os = parse_filter(os.environ["OS_VERSIONS"], "os_versions", OS_LABELS)
           selected_hggcrt = parse_filter(os.environ["HGGCRT_VERSIONS"], "hggcrt_versions", HGGCRT_LABELS)
-          version = resolve_version(os.environ.get("ARTIFACT_VERSION", "").strip())
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          now = datetime.now(timezone(timedelta(hours=8)))
+          version = resolve_version(os.environ.get("ARTIFACT_VERSION", "").strip(), event_name)
+          # Only a scheduled run is pinned; a push or a dispatch builds exactly what it triggered on.
+          slot_commit = resolve_slot_commit(resolve_slot(now)) if event_name == "schedule" else ""
+          # The upload directory is comm.<ref>-<stamp> and is shared by every row of the run: the
+          # label loses its dashes (2026-11-17-1900 -> 202611171900) and the ref keeps only
+          # characters a path accepts, so callers can build the URL and no two runs collide.
+          upload_stamp = re.sub(r"[^A-Za-z0-9._]", "_", version.replace("-", ""))
+          ref_slug = re.sub(r"[^A-Za-z0-9._-]", "_", os.environ.get("GITHUB_REF_NAME") or "unknown")
+          ref_slug = ref_slug.strip("_") or "unknown"
 
           entries = []
           for os_label, hggcrt, sdk_name, image in BUILD_TABLE:
@@ -216,7 +276,8 @@ jobs:
               entries.append({
                   "os": os_label,
                   "hggcrt": hggcrt,
-                  # Distinct artifact name per matrix row so the merge pattern is unambiguous.
+                  # Distinct artifact name per matrix row, so the transfer-back call below addresses
+                  # exactly one combination.
                   "pkg_name": f"sailbandwidth_hggcrt{hggcrt}_{os_label}",
                   "output_dir": f"output_hggcrt{hggcrt}_{os_label}",
                   "build_script": f"sailbandwidth_hggcrt{hggcrt}_tar_build.sh",
@@ -231,6 +292,8 @@ jobs:
           buildable = len(entries)
           print(f"matrix entries: {buildable}, all with container images")
           print(f"artifact version: {version}")
+          print(f"upload destination directory: comm.{ref_slug}-{upload_stamp}/")
+          print(f"built commit: {slot_commit or os.environ.get('GITHUB_SHA', 'triggered commit')}")
           # `max-parallel` is consumed through fromJSON at job level, where a non-numeric value
           # fails the whole matrix, so normalise the input here instead of trusting the dispatcher.
           raw_parallel = (os.environ.get("MAX_PARALLEL") or "").strip()
@@ -241,6 +304,9 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write("matrix=" + json.dumps({"include": entries}, separators=(",", ":")) + "\n")
               output.write(f"version={version}\n")
+              output.write(f"ref_slug={ref_slug}\n")
+              output.write(f"upload_stamp={upload_stamp}\n")
+              output.write(f"slot_commit={slot_commit}\n")
               output.write(f"buildable={buildable}\n")
               output.write(f"max_parallel={max_parallel}\n")
           PY
@@ -281,9 +347,21 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
         with:
+          # A nightly run builds the code as of 19:00 UTC+8 even when the run is queued late;
+          # push and dispatch runs leave the ref empty and get the triggered commit.
+          ref: ${{ needs.prepare.outputs.slot_commit || github.sha }}
           fetch-depth: 0
           path: sailbandwidth
           persist-credentials: false
+
+      - name: Reset the staging directory
+        # `actions/checkout` only cleans the source path it manages, so on a persistent runner this
+        # row would inherit the previous run's tarball: the verification step would judge it and the
+        # upload step would publish it.
+        run: |
+          set -euo pipefail
+          rm -rf "${workspace_output}" 2>/dev/null || sudo -n rm -rf "${workspace_output}"
+          mkdir -p "${workspace_output}"
 
       - name: Reclaim disk space
         # Only the GitHub-hosted image carries ~25 GB of preinstalled toolchains this build never
@@ -362,107 +440,99 @@ jobs:
             "${{ matrix.image }}" \
             bash /tmp/build-inside.sh
 
-      - name: Verify the expected tarballs were produced
+      - name: Verify the expected tarball was produced
         # Host-side check: the container wrote into the mounted workspace as root, so the files are
-        # handed back to the runner user first, then the expected tarballs are verified where the
-        # upload step will read them.
+        # handed back to the runner user first, then the release package is verified where the
+        # upload step will read it. The member list goes through a file instead of a
+        # `tar -tzf | grep -qx` pipeline: with `pipefail` on, a tar that dies of SIGPIPE after grep
+        # matched reads as "member missing", and a tar that cannot read the archive looks the same,
+        # so the members themselves are reported when the check fails.
         run: |
           set -euo pipefail
           sudo chown -R "$(id -u):$(id -g)" "${workspace_output}" 2>/dev/null || true
 
-          for component in comm_internal comm_release; do
-            tarball="${workspace_output}/${component}/${pkg_name}.tar.gz"
-            if [ ! -f "${tarball}" ]; then
-              echo "::error::${tarball} was not produced"
-              ls -la "${workspace_output}/comm_internal" "${workspace_output}/comm_release" 2>&1 | head -n 30 || true
-              exit 1
-            fi
-          done
+          tarball="${workspace_output}/${pkg_name}.tar.gz"
+          if [ ! -f "${tarball}" ]; then
+            echo "::error::${tarball} was not produced"
+            ls -la "${workspace_output}" 2>&1 | head -n 30 || true
+            exit 1
+          fi
 
-          echo "######################### $(date +%Y%m%d%H%M%S) Tarballs of ${pkg_name} ##########################"
-          find "${workspace_output}" -maxdepth 2 -name '*.tar.gz' -type f -print
+          echo "######################### $(date +%Y%m%d%H%M%S) Tarball of ${pkg_name} ##########################"
+          ls -lh "${tarball}"
+          listing="${RUNNER_TEMP}/${pkg_name}-entries.txt"
+          if ! tar -tzf "${tarball}" >"${listing}" 2>"${listing}.err"; then
+            echo "::error::${tarball##*/} cannot be read: $(tr '\n' ' ' <"${listing}.err" | cut -c1-400)"
+            exit 1
+          fi
+          echo "${pkg_name}.tar.gz holds $(wc -l <"${listing}") entries"
+          head -n 20 "${listing}"
+          # The release package must still carry comm_tools/ as its top level, so an empty or
+          # wrongly staged tarball is caught here instead of by whoever downloads it.
+          grep -qxE '(\./)?comm_tools/single_process/sailbandwidth' "${listing}" || {
+            echo "::error::${tarball##*/} has no comm_tools/single_process/sailbandwidth; entries: $(tr '\n' ' ' <"${listing}" | cut -c1-500)"
+            exit 1
+          }
 
-      - name: Upload tarballs as run artifact
+      - name: Upload the tarball as run artifact
         uses: actions/upload-artifact@v4
         with:
-          # run_id / run_attempt keep re-runs of the same commit from colliding.
-          name: ${{ matrix.pkg_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ matrix.output_dir }}/comm_internal/*.tar.gz
-            ${{ matrix.output_dir }}/comm_release/*.tar.gz
+          # Fixed per row: the artifact name is the only thing the transfer-back call knows, and a
+          # name without a run suffix keeps the published file name stable (<pkg_name>.zip).
+          name: ${{ matrix.pkg_name }}
+          # A re-run of the same run re-uploads this very name, which v4 rejects unless it may
+          # replace; each row has its own name, so nothing is overwritten across rows.
+          overwrite: true
+          # One file at the top level of the artifact, so the stored zip holds a single entry.
+          path: ${{ matrix.output_dir }}/${{ matrix.pkg_name }}.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-  # Merge the per-matrix artifacts into one. The tarballs stay inside this repository's own
-  # Actions artifacts; nothing is pushed to an external server.
-  publish:
-    name: Publish run artifact
+  # One transfer-back call per OS / HGGCRT row. The reusable workflow publishes the row artifact
+  # as the zip it already is, so a consumer downloads <pkg_name>.zip and unpacks the single
+  # <pkg_name>.tar.gz inside it.
+  upload:
+    name: Transfer back ${{ matrix.os }} (hggcrt${{ matrix.hggcrt }})
     needs: [prepare, build]
-    if: >-
-      ${{ !cancelled() &&
-          needs.prepare.result == 'success' &&
-          needs.prepare.outputs.buildable != '0' &&
-          (needs.build.result == 'success' || needs.build.result == 'failure') }}
-    runs-on: x86-ubuntu2404-8-32
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    outputs:
-      artifact_name: ${{ steps.name.outputs.artifact_name }}
-    steps:
-      - name: Resolve merged artifact name
-        id: name
-        env:
-          LABEL: ${{ needs.prepare.outputs.version }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # The label is the UTC+8 "YYYY-MM-DD-HHmm" timestamp the prepare job resolves once
-          # per run, so the artifact reads like a release stamp instead of an internal run id
-          # and matches the value shown in the run summary.
-          if [ -z "${LABEL:-}" ]; then
-            echo "::error::the artifact label is empty; the prepare job did not export outputs.version"
-            exit 1
-          fi
-          # The git ref tells main-branch and release-branch builds apart. Branch names contain
-          # "/" and tags may contain other characters an artifact name rejects, so fold anything
-          # outside [A-Za-z0-9._-] into a single "-".
-          ref_slug=$(printf '%s' "${REF_NAME:-unknown}" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/--*/-/g' -e 's/^-//' -e 's/-$//')
-          ref_slug=${ref_slug:-unknown}
-          echo "artifact_name=sailbandwidth-tarballs-${ref_slug}-${LABEL}" >> "$GITHUB_OUTPUT"
-
-      - name: Merge tarball artifacts
-        uses: actions/upload-artifact/merge@v4
-        with:
-          name: ${{ steps.name.outputs.artifact_name }}
-          pattern: sailbandwidth_hggcrt*-${{ github.run_id }}-${{ github.run_attempt }}
-          delete-merged: true
-          # The merge republishes a fresh archive and does not inherit the per-row compression-level
-          # (its own default is 6). The inputs are already gzipped tarballs, so store them as they are
-          # instead of spending zlib work on data that cannot shrink further.
-          compression-level: 0
-          retention-days: 30
-
-      - name: Write artifact summary
-        if: always()
-        env:
-          ARTIFACT_NAME: ${{ steps.name.outputs.artifact_name }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PUBLISH_RESULT: ${{ job.status }}
-        run: |
-          {
-            printf '### sailbandwidth tarballs\n\n'
-            printf '| item | value |\n| --- | --- |\n'
-            printf '| artifact | `%s` |\n' "${ARTIFACT_NAME}"
-            printf '| download | [run artifacts](%s) |\n' "${RUN_URL}"
-            printf '| result | %s |\n' "${PUBLISH_RESULT}"
-          } >> "$GITHUB_STEP_SUMMARY"
+    # A failed row must not keep the other OS / HGGCRT combinations away from the artifact server:
+    # the rows that did build are still transferred, and a row whose artifact is missing fails
+    # here instead of being skipped silently.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    # The called workflow downloads the artifact with the token of this job, so the scope it needs
+    # is granted on this side: a called workflow can narrow permissions but never add them.
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      # Transfers are cheap next to a compile, so the cap only keeps the parallel uploads from
+      # swamping the destination; it reuses the build input instead of adding another one.
+      max-parallel: ${{ fromJSON(needs.prepare.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    uses: t-head/ci-infra/.github/workflows/upload-artifact-properties.yml@main
+    with:
+      artifact_name: ${{ matrix.pkg_name }}
+      # comm.<ref>-<stamp>: one destination directory per run, shared by every row.
+      version: comm.${{ needs.prepare.outputs.ref_slug }}-${{ needs.prepare.outputs.upload_stamp }}
+      package_type: binary
+      package_name: sailbandwidth
+      package_version: main
+      # Per-row properties, so a query can pick one OS / runtime family out of the directory.
+      os: ${{ matrix.os }}
+      runtime: HGGCRT ${{ matrix.hggcrt }}
+      # branch, tag, commit, log_url, run_id and run_attempt are derived from the caller context;
+      # a nightly builds the 19:00 commit instead of github.sha, so that one is recorded here.
+      extra_info: built_commit=${{ needs.prepare.outputs.slot_commit || github.sha }}
+      template_repository: t-head/ci-infra
+      template_ref: main
+    secrets:
+      release_username: ${{ secrets.RELEASE_USERNAME }}
+      release_token: ${{ secrets.RELEASE_TOKEN }}
 
   summary:
     name: Build summary
-    needs: [prepare, build, publish]
+    needs: [prepare, build, upload]
     if: always()
     runs-on: x86-ubuntu2404-8-32
     timeout-minutes: 10
@@ -473,28 +543,42 @@ jobs:
           MATRIX_JSON: ${{ needs.prepare.outputs.matrix }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          REF_SLUG: ${{ needs.prepare.outputs.ref_slug }}
+          UPLOAD_STAMP: ${{ needs.prepare.outputs.upload_stamp }}
+          SLOT_COMMIT: ${{ needs.prepare.outputs.slot_commit }}
           BUILD_RESULT: ${{ needs.build.result }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-          ARTIFACT_NAME: ${{ needs.publish.outputs.artifact_name }}
+          UPLOAD_RESULT: ${{ needs.upload.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           import os
 
+          env = os.environ
+          ref_slug = env.get("REF_SLUG") or "unknown"
+          stamp = env.get("UPLOAD_STAMP") or "unknown"
+          # Every row lands in this one directory, so it is reported once instead of per row.
+          upload_dir = f"`comm.{ref_slug}-{stamp}/`" if stamp != "unknown" else "n/a"
           print("### sailbandwidth build artifacts\n")
-          print(f"| item | value |\n| --- | --- |")
-          print(f"| label | {os.environ.get('VERSION') or 'n/a'} |")
-          print(f"| artifact | `{os.environ.get('ARTIFACT_NAME') or 'n/a'}` |")
-          print(f"| prepare | {os.environ.get('PREPARE_RESULT', '')} |")
-          print(f"| build | {os.environ.get('BUILD_RESULT', '')} |")
-          print(f"| publish | {os.environ.get('PUBLISH_RESULT', '')} |")
+          print("| item | value |\n| --- | --- |")
+          print(f"| label | {env.get('VERSION') or 'n/a'} |")
+          print(f"| upload directory | {upload_dir} |")
+          print(f"| built commit | `{env.get('SLOT_COMMIT') or 'triggered commit'}` |")
+          print(f"| artifacts | [run {env.get('RUN_ID', '')}, attempt {env.get('RUN_ATTEMPT', '')}]({env.get('RUN_URL', '')}) |")
+          print(f"| prepare | {env.get('PREPARE_RESULT', '')} |")
+          print(f"| build | {env.get('BUILD_RESULT', '')} |")
+          print(f"| transfer back | {env.get('UPLOAD_RESULT', '')} |")
 
-          raw = os.environ.get("MATRIX_JSON") or ""
+          raw = env.get("MATRIX_JSON") or ""
           if not raw:
               print("\nNo matrix was generated.")
               raise SystemExit(0)
           entries = json.loads(raw).get("include", [])
-          print("\n| os | hggcrt | package | image |\n| --- | --- | --- | --- |")
+          print("\n| os | hggcrt | github artifact | uploaded zip | image |")
+          print("| --- | --- | --- | --- | --- |")
           for entry in entries:
-              print(f"| {entry['os']} | {entry['hggcrt']} | `{entry['pkg_name']}.tar.gz` | `{entry['image']}` |")
+              print(f"| {entry['os']} | {entry['hggcrt']} | `{entry['pkg_name']}` | "
+                    f"`{entry['pkg_name']}.zip` | `{entry['image']}` |")
           PY
