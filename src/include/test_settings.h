@@ -43,6 +43,9 @@ struct TestSettings {
     // Multinode configuration
     std::int64_t targetNumPairs = kDefaultTargetPairs;
     bool targetNumPairsSpecified = false;
+    int maxConcurrentPairs = -1;
+
+    bool isConcurrentPairSchedule() const { return maxConcurrentPairs >= 0; }
 
     // Boolean flags
     bool verbose = false;

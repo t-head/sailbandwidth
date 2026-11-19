@@ -52,6 +52,13 @@ class Testcase {
     void oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead);
     void allHostHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost);
     void allHostBidirHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost);
+#ifdef MULTINODE
+    static void multinodeConcurrentPairHelper(unsigned long long size, unsigned long long loopCount, MemcpyInitiator *memcpyInitiator,
+                                              bool isRead, PeerValueMatrix<double> &bandwidthValues);
+    static void multinodeConcurrentBidirPairHelper(unsigned long long size, unsigned long long loopCount, MemcpyInitiator *memcpyInitiator,
+                                                   bool isRead, PeerValueMatrix<double> &bandwidthValues1,
+                                                   PeerValueMatrix<double> &bandwidthValues2, PeerValueMatrix<double> &bandwidthValuesTotal);
+#endif
 
     // Copy the worst run-to-run coefficient of variation measured by the
     // operation onto the result matrix, so it is emitted as the test's

@@ -184,6 +184,13 @@ class MemcpyDispatchInfo {
     void elapsedTime(int buffIdx, double *bandwidth, unsigned long long loopCount);
 };
 
+struct DeferredVerification {
+    std::string context;
+    std::string dumpTag;
+    std::vector<std::string> reports;
+    std::string verboseReport;
+};
+
 class NodeHelper {
  public:
     virtual MemcpyDispatchInfo dispatchMemcpy(const std::vector<const MemcpyBuffer*> &srcBuffers, const std::vector<const MemcpyBuffer*> &dstBuffers, P2PType p2pType, ContextPreference ctxPreference) = 0;
@@ -199,6 +206,8 @@ class NodeHelper {
     virtual void streamBlockerReset() = 0;
     virtual void streamBlockerRelease() = 0;
     virtual void streamBlockerBlock(HGstream mainstream, HGstream die0stream, HGstream die1stream) = 0;
+    virtual bool streamBlockerTimedOut() { return false; }
+    virtual DeferredVerification *deferredVerification() { return nullptr; }
 
     virtual ~NodeHelper() = default;
 };

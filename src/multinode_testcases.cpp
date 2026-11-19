@@ -22,10 +22,109 @@
 #include "output.h"
 #ifdef MULTINODE
 #include <mpi.h>
+#include <memory>
+#include <set>
 #include "multinode_memcpy.h"
+
+void Testcase::multinodeConcurrentPairHelper(unsigned long long size, unsigned long long loopCount, MemcpyInitiator *memcpyInitiator,
+                                              bool isRead, PeerValueMatrix<double> &bandwidthValues) {
+    auto *phaseHelper = new NodeHelperMulti(true);
+    MemcpyOperation memcpyInstance(loopCount, memcpyInitiator, phaseHelper, isRead ? PREFER_DST_CONTEXT : PREFER_SRC_CONTEXT,
+                                   MemcpyOperation::VECTOR_BW);
+    const bool copyFromPeer = isRead;
+
+    const auto phases = planConcurrentPairPhases(generateTestPairs(worldSize, gSettings.targetNumPairs), false);
+    for (size_t phaseIndex = 0; phaseIndex < phases.size(); phaseIndex++) {
+        phaseHelper->beginPhase(phaseIndex + 1, phases.size());
+        const auto &phase = phases[phaseIndex];
+        std::vector<std::unique_ptr<MultinodeDeviceBufferUnicast>> buffers;
+        std::vector<const MemcpyBuffer*> srcNodes;
+        std::vector<const MemcpyBuffer*> dstNodes;
+        for (const auto& pair : phase) {
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.first));
+            const MemcpyBuffer *srcNode = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.second));
+            const MemcpyBuffer *peerNode = buffers.back().get();
+
+            srcNodes.push_back(copyFromPeer ? peerNode : srcNode);
+            dstNodes.push_back(copyFromPeer ? srcNode : peerNode);
+        }
+
+        auto results = memcpyInstance.doMemcpyVector(srcNodes, dstNodes);
+        for (size_t i = 0; i < phase.size(); i++) {
+            bandwidthValues.value(phase[i].first, phase[i].second) = results[i];
+        }
+    }
+
+    recordStability(bandwidthValues, memcpyInstance);
+}
+
+void Testcase::multinodeConcurrentBidirPairHelper(unsigned long long size, unsigned long long loopCount, MemcpyInitiator *memcpyInitiator,
+                                                   bool isRead, PeerValueMatrix<double> &bandwidthValues1,
+                                                   PeerValueMatrix<double> &bandwidthValues2, PeerValueMatrix<double> &bandwidthValuesTotal) {
+    auto *phaseHelper = new NodeHelperMulti(true);
+    MemcpyOperation memcpyInstance(loopCount, memcpyInitiator, phaseHelper, isRead ? PREFER_DST_CONTEXT : PREFER_SRC_CONTEXT,
+                                   MemcpyOperation::VECTOR_BW);
+    const bool copyFromPeer = isRead;
+    const auto selectedPairs = generateTestPairs(worldSize, gSettings.targetNumPairs);
+    const std::set<std::pair<int, int>> selected(selectedPairs.begin(), selectedPairs.end());
+
+    const auto phases = planConcurrentPairPhases(selectedPairs, true);
+    for (size_t phaseIndex = 0; phaseIndex < phases.size(); phaseIndex++) {
+        phaseHelper->beginPhase(phaseIndex + 1, phases.size());
+        const auto &phase = phases[phaseIndex];
+        std::vector<std::unique_ptr<MultinodeDeviceBufferUnicast>> buffers;
+        std::vector<const MemcpyBuffer*> srcNodes;
+        std::vector<const MemcpyBuffer*> dstNodes;
+        for (const auto& pair : phase) {
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.first));
+            const MemcpyBuffer *src1 = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.first));
+            const MemcpyBuffer *src2 = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.second));
+            const MemcpyBuffer *peer1 = buffers.back().get();
+            buffers.emplace_back(new MultinodeDeviceBufferUnicast(size, pair.second));
+            const MemcpyBuffer *peer2 = buffers.back().get();
+
+            srcNodes.push_back(copyFromPeer ? peer1 : src1);
+            dstNodes.push_back(copyFromPeer ? src1 : peer1);
+            srcNodes.push_back(copyFromPeer ? src2 : peer2);
+            dstNodes.push_back(copyFromPeer ? peer2 : src2);
+        }
+
+        auto results = memcpyInstance.doMemcpyVector(srcNodes, dstNodes);
+        for (size_t i = 0; i < phase.size(); i++) {
+            const int srcDeviceId = phase[i].first;
+            const int peerDeviceId = phase[i].second;
+            const double srcExecuted = results[2 * i];
+            const double peerExecuted = results[2 * i + 1];
+            if (selected.count({srcDeviceId, peerDeviceId}) != 0) {
+                bandwidthValues1.value(srcDeviceId, peerDeviceId) = srcExecuted;
+                bandwidthValues2.value(srcDeviceId, peerDeviceId) = peerExecuted;
+                bandwidthValuesTotal.value(srcDeviceId, peerDeviceId) = srcExecuted + peerExecuted;
+            }
+            if (selected.count({peerDeviceId, srcDeviceId}) != 0) {
+                bandwidthValues1.value(peerDeviceId, srcDeviceId) = peerExecuted;
+                bandwidthValues2.value(peerDeviceId, srcDeviceId) = srcExecuted;
+                bandwidthValuesTotal.value(peerDeviceId, srcDeviceId) = srcExecuted + peerExecuted;
+            }
+        }
+    }
+
+    recordStability(bandwidthValuesTotal, memcpyInstance);
+}
+
 
 // DtoD Read test - copy from dst to src (backwards) using src context
 void MultinodeDeviceToDeviceReadCE::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
+        multinodeConcurrentPairHelper(size, loopCount, new MemcpyInitiatorCE(), true, bandwidthValues);
+        output->addTestcaseResults(bandwidthValues, "memcpy CE PPU(row) -> PPU(column) bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy CE PPU(row) -> PPU(column)");
+        return;
+    }
+
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), new NodeHelperMulti(), PREFER_DST_CONTEXT);
 
@@ -48,6 +147,14 @@ void MultinodeDeviceToDeviceReadCE::run(unsigned long long size, unsigned long l
 
 // DtoD Write test - copy from src to dst using src context
 void MultinodeDeviceToDeviceWriteCE::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
+        multinodeConcurrentPairHelper(size, loopCount, new MemcpyInitiatorCE(), false, bandwidthValues);
+        output->addTestcaseResults(bandwidthValues, "memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy CE PPU(row) <- PPU(column)");
+        return;
+    }
+
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), new NodeHelperMulti(), PREFER_SRC_CONTEXT);
 
@@ -68,6 +175,19 @@ void MultinodeDeviceToDeviceWriteCE::run(unsigned long long size, unsigned long 
 
 // DtoD Bidir Read test - copy from dst to src (backwards) using src context
 void MultinodeDeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValuesRead1(worldSize, worldSize, key + "_read1");
+        PeerValueMatrix<double> bandwidthValuesRead2(worldSize, worldSize, key + "_read2");
+        PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
+        multinodeConcurrentBidirPairHelper(size, loopCount, new MemcpyInitiatorCE(), true,
+                                           bandwidthValuesRead1, bandwidthValuesRead2, bandwidthValuesTotal);
+        output->addTestcaseResults(bandwidthValuesRead1, "memcpy CE PPU(row) <-> PPU(column) Read1 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesRead2, "memcpy CE PPU(row) <-> PPU(column) Read2 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesTotal, "memcpy CE PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValuesTotal, true, "memcpy CE PPU(row) <-> PPU(column) Total");
+        return;
+    }
+
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), new NodeHelperMulti(), PREFER_DST_CONTEXT, MemcpyOperation::VECTOR_BW);
     PeerValueMatrix<double> bandwidthValuesRead1(worldSize, worldSize, key + "_read1");
     PeerValueMatrix<double> bandwidthValuesRead2(worldSize, worldSize, key + "_read2");
@@ -99,6 +219,19 @@ void MultinodeDeviceToDeviceBidirReadCE::run(unsigned long long size, unsigned l
 
 // DtoD Bidir Write test - copy from src to dst using src context
 void MultinodeDeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValuesWrite1(worldSize, worldSize, key + "_write1");
+        PeerValueMatrix<double> bandwidthValuesWrite2(worldSize, worldSize, key + "_write2");
+        PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
+        multinodeConcurrentBidirPairHelper(size, loopCount, new MemcpyInitiatorCE(), false,
+                                           bandwidthValuesWrite1, bandwidthValuesWrite2, bandwidthValuesTotal);
+        output->addTestcaseResults(bandwidthValuesWrite1, "memcpy CE PPU(row) <-> PPU(column) Write1 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesWrite2, "memcpy CE PPU(row) <-> PPU(column) Write2 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesTotal, "memcpy CE PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValuesTotal, true, "memcpy CE PPU(row) <-> PPU(column) Total");
+        return;
+    }
+
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorCE(), new NodeHelperMulti(), PREFER_SRC_CONTEXT, MemcpyOperation::VECTOR_BW);
     PeerValueMatrix<double> bandwidthValuesWrite1(worldSize, worldSize, key + "_write1");
     PeerValueMatrix<double> bandwidthValuesWrite2(worldSize, worldSize, key + "_write2");
@@ -130,6 +263,14 @@ void MultinodeDeviceToDeviceBidirWriteCE::run(unsigned long long size, unsigned 
 
 // DtoD Read test - copy from dst to src (backwards) using src context
 void MultinodeDeviceToDeviceReadSM::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
+        multinodeConcurrentPairHelper(size, loopCount, new MemcpyInitiatorSM(), true, bandwidthValues);
+        output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) -> PPU(column) bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy SM PPU(row) -> PPU(column)");
+        return;
+    }
+
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM(), new NodeHelperMulti(), PREFER_DST_CONTEXT);
 
@@ -151,6 +292,14 @@ void MultinodeDeviceToDeviceReadSM::run(unsigned long long size, unsigned long l
 
 // DtoD Write test - copy from src to dst using src context
 void MultinodeDeviceToDeviceWriteSM::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
+        multinodeConcurrentPairHelper(size, loopCount, new MemcpyInitiatorSM(), false, bandwidthValues);
+        output->addTestcaseResults(bandwidthValues, "memcpy SM PPU(row) <- PPU(column) bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValues, true, "memcpy SM PPU(row) <- PPU(column)");
+        return;
+    }
+
     PeerValueMatrix<double> bandwidthValues(worldSize, worldSize, key);
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM(), new NodeHelperMulti(), PREFER_SRC_CONTEXT);
 
@@ -171,6 +320,19 @@ void MultinodeDeviceToDeviceWriteSM::run(unsigned long long size, unsigned long 
 
 // DtoD Bidir Read test - copy from dst to src (backwards) using src context
 void MultinodeDeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValuesRead1(worldSize, worldSize, key + "_read1");
+        PeerValueMatrix<double> bandwidthValuesRead2(worldSize, worldSize, key + "_read2");
+        PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
+        multinodeConcurrentBidirPairHelper(size, loopCount, new MemcpyInitiatorSM(), true,
+                                           bandwidthValuesRead1, bandwidthValuesRead2, bandwidthValuesTotal);
+        output->addTestcaseResults(bandwidthValuesRead1, "memcpy SM PPU(row) <-> PPU(column) Read1 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesRead2, "memcpy SM PPU(row) <-> PPU(column) Read2 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesTotal, "memcpy SM PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValuesTotal, true, "memcpy SM PPU(row) <-> PPU(column) Total");
+        return;
+    }
+
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM(), new NodeHelperMulti(), PREFER_DST_CONTEXT, MemcpyOperation::VECTOR_BW);
     PeerValueMatrix<double> bandwidthValuesRead1(worldSize, worldSize, key + "_read1");
     PeerValueMatrix<double> bandwidthValuesRead2(worldSize, worldSize, key + "_read2");
@@ -202,6 +364,19 @@ void MultinodeDeviceToDeviceBidirReadSM::run(unsigned long long size, unsigned l
 
 // DtoD Bidir Write test - copy from src to dst using src context
 void MultinodeDeviceToDeviceBidirWriteSM::run(unsigned long long size, unsigned long long loopCount) {
+    if (gSettings.isConcurrentPairSchedule()) {
+        PeerValueMatrix<double> bandwidthValuesWrite1(worldSize, worldSize, key + "_write1");
+        PeerValueMatrix<double> bandwidthValuesWrite2(worldSize, worldSize, key + "_write2");
+        PeerValueMatrix<double> bandwidthValuesTotal(worldSize, worldSize, key + "_total");
+        multinodeConcurrentBidirPairHelper(size, loopCount, new MemcpyInitiatorSM(), false,
+                                           bandwidthValuesWrite1, bandwidthValuesWrite2, bandwidthValuesTotal);
+        output->addTestcaseResults(bandwidthValuesWrite1, "memcpy SM PPU(row) <-> PPU(column) Write1 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesWrite2, "memcpy SM PPU(row) <-> PPU(column) Write2 bandwidth (GB/s)");
+        output->addTestcaseResults(bandwidthValuesTotal, "memcpy SM PPU(row) <-> PPU(column) Total bandwidth (GB/s)");
+        output->displayUtilizationRatioMatrix(bandwidthValuesTotal, true, "memcpy SM PPU(row) <-> PPU(column) Total");
+        return;
+    }
+
     MemcpyOperation memcpyInstance(loopCount, new MemcpyInitiatorSM(), new NodeHelperMulti(), PREFER_SRC_CONTEXT, MemcpyOperation::VECTOR_BW);
     PeerValueMatrix<double> bandwidthValuesWrite1(worldSize, worldSize, key + "_write1");
     PeerValueMatrix<double> bandwidthValuesWrite2(worldSize, worldSize, key + "_write2");

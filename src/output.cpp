@@ -262,7 +262,16 @@ void Output::recordWarning(const std::string &warning) {
     OUTPUT << warning << std::endl;
 }
 
+void Output::recordPhaseDiagnostics(const std::string &message) {
+    if (OUTPUT.controlVariable && !gSettings.isPerfOutput()) std::cout << message << std::flush;
+}
+
 void RecordError(const std::stringstream &errmsg) {
+#ifdef MULTINODE
+    if (!errorContext.empty() && worldRank != 0 && gSettings.isJsonOutput()) {
+        std::cerr << errmsg.str() << std::flush;
+    }
+#endif
     output->recordError(errmsg.str());
 }
 

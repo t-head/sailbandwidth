@@ -82,6 +82,7 @@ class Output {
     virtual void recordErrorCurrentTest(const std::string &errorPart1, const std::string &errorPart2);
 
     virtual void recordWarning(const std::string &warning);
+    virtual void recordPhaseDiagnostics(const std::string &message);
 
     virtual void addHggcAndDriverInfo(int hggcDriverApiVersion, const std::string &hgmlDriverVersion, const std::string &sdkVersion);
 

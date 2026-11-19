@@ -674,6 +674,46 @@ HGresult spinKernel(volatile int *latch, HGstream mainstream, HGstream die0strea
     return HGGC_SUCCESS;
 }
 
+__global__ void spinKernelDeviceReportTimeout(volatile int *latch, volatile int *timedOut, const unsigned long long timeoutClocks) {
+    unsigned long long endTime = clock64() + timeoutClocks;
+    while (!*latch) {
+        if (timeoutClocks != ~0ULL && clock64() > endTime) {
+            *timedOut = 1;
+            __threadfence_system();
+            break;
+        }
+    }
+}
+
+HGresult spinKernelReportTimeout(volatile int *latch, volatile int *timedOut, HGstream mainstream, HGstream die0stream, HGstream die1stream, unsigned long long timeoutMs) {
+    int clocksPerMs = 0;
+    HGcontext ctx;
+    HGdevice dev;
+
+    ASSERT(timedOut != nullptr);
+
+    if (mainstream == nullptr) {
+        HG_ASSERT(hgStreamGetCtx(die0stream, &ctx));
+        HG_ASSERT(hgCtxGetDevice(&dev));
+        HG_ASSERT(hgDeviceGetAttribute(&clocksPerMs, HG_DEVICE_ATTRIBUTE_CLOCK_RATE, dev));
+
+        unsigned long long timeoutClocks = clocksPerMs * timeoutMs;
+        spinKernelDeviceReportTimeout<<<1, 1, 0, die0stream>>>(latch, timedOut, timeoutClocks);
+        if (die1stream != nullptr) {
+            spinKernelDeviceReportTimeout<<<1, 1, 0, die1stream>>>(latch, timedOut, timeoutClocks);
+        }
+    } else {
+        HG_ASSERT(hgStreamGetCtx(mainstream, &ctx));
+        HG_ASSERT(hgCtxGetDevice(&dev));
+        HG_ASSERT(hgDeviceGetAttribute(&clocksPerMs, HG_DEVICE_ATTRIBUTE_CLOCK_RATE, dev));
+
+        unsigned long long timeoutClocks = clocksPerMs * timeoutMs;
+        spinKernelDeviceReportTimeout<<<1, 1, 0, mainstream>>>(latch, timedOut, timeoutClocks);
+    }
+
+    return HGGC_SUCCESS;
+}
+
 __global__ void spinKernelDeviceMultistage(volatile int *latch1, volatile int *latch2, const unsigned long long timeoutClocks) {
     if (latch1) {
         unsigned long long endTime = clock64() + timeoutClocks;
@@ -1048,6 +1088,9 @@ void preloadKernels(int deviceCount) {
         hggcSetDevice(iDev);
         hggcFuncGetAttributes(&unused, &stridingMemcpyKernel);
         hggcFuncGetAttributes(&unused, &spinKernelDevice);
+        if (gSettings.isConcurrentPairSchedule()) {
+            hggcFuncGetAttributes(&unused, &spinKernelDeviceReportTimeout);
+        }
         hggcFuncGetAttributes(&unused, &spinKernelDeviceMultistage);
         hggcFuncGetAttributes(&unused, &simpleCopyKernel);
         hggcFuncGetAttributes(&unused, &splitWarpCopyKernel);

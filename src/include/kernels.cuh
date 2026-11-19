@@ -33,6 +33,7 @@ size_t copyKernel(MemcpyDescriptor &desc);
 size_t copyKernelSplitWarp(MemcpyDescriptor &desc);
 size_t multicastCopy(HGdeviceptr dstBuffer, HGdeviceptr srcBuffer, size_t size, HGstream stream, unsigned long long loopCount);
 HGresult spinKernel(volatile int *latch, HGstream mainstream, HGstream die0stream, HGstream die1stream, unsigned long long timeoutMs = DEFAULT_SPIN_KERNEL_TIMEOUT_MS);
+HGresult spinKernelReportTimeout(volatile int *latch, volatile int *timedOut, HGstream mainstream, HGstream die0stream, HGstream die1stream, unsigned long long timeoutMs = DEFAULT_SPIN_KERNEL_TIMEOUT_MS);
 HGresult spinKernelMultistage(volatile int *latch1, volatile int *latch2, HGstream mainstream, HGstream die0stream, HGstream die1stream, unsigned long long timeoutMs = DEFAULT_SPIN_KERNEL_TIMEOUT_MS);
 void preloadKernels(int deviceCount);
 double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned long long latencyMemAccessCnt, unsigned smCount);

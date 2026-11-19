@@ -62,6 +62,7 @@ set(src
     src/sailbandwidth.cpp
     src/multinode_memcpy.cpp
     src/multinode_testcases.cpp
+    src/pair_schedule.cpp
     src/environment.cpp
     src/hggc_version_check.cpp
     src/output.cpp
