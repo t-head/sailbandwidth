@@ -414,6 +414,55 @@ ensure_sdk_installer_perl() {
     tail -n 10 /tmp/perl-tie-file-install.log 2>/dev/null || true
 }
 
+# Public Ubuntu mirrors, tried in this order. The first one is the historical default; the others
+# only exist so that one slow mirror cannot fail a whole matrix row.
+APT_MIRRORS="mirrors.aliyun.com mirrors.tuna.tsinghua.edu.cn mirrors.ustc.edu.cn"
+
+write_public_apt_sources() {
+    local mirror="$1"
+    local codename="$2"
+    # A plain sources.list replaces whatever the image shipped, deb822 .sources files included.
+    # main + universe carry everything this toolchain needs; multiverse and backports would only
+    # add package lists to download, which is the part that gets slow under load.
+    printf '%s\n' \
+        "deb http://${mirror}/ubuntu/ ${codename} main restricted universe" \
+        "deb http://${mirror}/ubuntu/ ${codename}-updates main restricted universe" \
+        "deb http://${mirror}/ubuntu/ ${codename}-security main restricted universe" \
+        > /etc/apt/sources.list
+    rm -f /etc/apt/sources.list.d/*.sources
+}
+
+# Bounded and retried: a stalled transfer is abandoned after 30s instead of being waited out, and a
+# mirror that keeps stalling is replaced by the next one in APT_MIRRORS. A single stalled index
+# fetch used to abort the whole row through the old 900s cap.
+apt_refresh_index() {
+    local codename="$1"
+    local attempt=0
+    local mirror
+    for mirror in ${APT_MIRRORS}; do
+        attempt=$((attempt + 1))
+        if [ -n "${codename}" ]; then
+            echo "refreshing the apt index from ${mirror}"
+            write_public_apt_sources "${mirror}" "${codename}"
+        fi
+        if timeout -k 30 600 apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            -o Acquire::Retries=2 -o Acquire::ForceIPv4=true -o Acquire::Languages=none \
+            update </dev/null; then
+            return 0
+        fi
+        echo "::warning::apt-get update from ${mirror} failed (attempt ${attempt})"
+        sleep 15
+    done
+    return 1
+}
+
+apt_install_toolchain() {
+    timeout -k 30 1800 apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+        -o Acquire::Retries=2 -o Acquire::ForceIPv4=true \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        install -y --no-install-recommends wget make gcc g++ cmake git ca-certificates python3 libopenmpi-dev openmpi-bin tzdata </dev/null
+}
+
 # The docker_base images are plain OS images: they carry neither the PPU SDK nor the build
 # toolchain, while build.sh is only a CMake wrapper (cmake_minimum_required 3.20) and the
 # multi_process variant builds with -DMULTINODE=1, which needs mpicxx. Install whatever is
@@ -472,18 +521,21 @@ install_build_dependencies() {
         export TZ="${TZ:-Etc/UTC}"
         echo "Etc/UTC" > /etc/timezone
         ln -sf /usr/share/zoneinfo/Etc/UTC /etc/localtime
-        # A plain `apt-get update` blocks forever when a mirror stops answering; bound every
-        # transfer, force IPv4 and cap the whole run so a stuck mirror fails fast instead of hanging.
-        timeout -k 30 900 apt-get -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
-            -o Acquire::Retries=3 -o Acquire::ForceIPv4=true update </dev/null
         # ca-certificates is needed for the HTTPS download of the SDK below (keep the trust store
         # current, the bundled one predates the issuer of download.t-head.cn's certificate).
         # python3 is not used by this build, but the dependency list is kept in sync with
         # pccl/pccl-tests so all three repos install the same toolchain.
-        timeout -k 30 1800 apt-get -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
-            -o Acquire::Retries=3 -o Acquire::ForceIPv4=true \
-            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-            install -y --no-install-recommends wget make gcc g++ cmake git ca-certificates python3 libopenmpi-dev openmpi-bin tzdata </dev/null
+        # Most images ship a package index, so install against it first; a refresh is only needed
+        # when it cannot satisfy the toolchain. Running the refresh unconditionally is what turned
+        # one slow mirror into a failed row (exit code 124 from the old 900s cap).
+        if ! apt_install_toolchain; then
+            echo "::warning::the image's package index could not satisfy the toolchain; refreshing it"
+            apt_refresh_index "${codename}" || {
+                echo "::error::apt-get update failed against every mirror tried"
+                exit 1
+            }
+            apt_install_toolchain
+        fi
         update-ca-certificates >/dev/null 2>&1 || true
     elif command -v yum >/dev/null 2>&1; then
         prepare_yum_sources
@@ -582,12 +634,11 @@ source ${source_home}/PPU_SDK/envsetup.sh
 # cmake probes hgcc.
 ensure_modern_libstdcxx || exit 1
 
-mkdir -p ${build_output}/comm_internal/comm_tools/single_process
-mkdir -p ${build_output}/comm_release/comm_tools/single_process
-mkdir -p ${build_output}/comm_internal/comm_tools/multi_process
-mkdir -p ${build_output}/comm_release/comm_tools/multi_process
-mkdir -p ${build_output}/comm_internal/comm_tools/licenses
-mkdir -p ${build_output}/comm_release/comm_tools/licenses
+# The release package has comm_tools/ as its only top-level directory: one binary set per process
+# model plus the licenses. Stage it here and archive it straight into ${pkg_name}.tar.gz below.
+mkdir -p ${build_output}/comm_tools/single_process
+mkdir -p ${build_output}/comm_tools/multi_process
+mkdir -p ${build_output}/comm_tools/licenses
 
 # build.sh is a cmake wrapper and cmake initialises CMAKE_EXE_LINKER_FLAGS from $LDFLAGS. The SDK
 # ships prebuilt C++ libraries (libhg_wrapper.so) that reference GLIBCXX_3.4.21, while alios7's
@@ -616,25 +667,19 @@ echo "BUILD single_process"
 cd ${source_home}/sailbandwidth
 bash build.sh --rebuild --cpu_num ${cpu_num}
 
-cp ${source_home}/sailbandwidth/build/sailbandwidth ${build_output}/comm_internal/comm_tools/single_process
-cp ${source_home}/sailbandwidth/build/sailbandwidth ${build_output}/comm_release/comm_tools/single_process
+cp ${source_home}/sailbandwidth/build/sailbandwidth ${build_output}/comm_tools/single_process
 
 echo "BUILD multi_process"
 cd ${source_home}/sailbandwidth
 bash build.sh --rebuild --use_mpi --cpu_num ${cpu_num}
 
-cp ${source_home}/sailbandwidth/build/sailbandwidth ${build_output}/comm_internal/comm_tools/multi_process
-cp ${source_home}/sailbandwidth/build/sailbandwidth ${build_output}/comm_release/comm_tools/multi_process
+cp ${source_home}/sailbandwidth/build/sailbandwidth ${build_output}/comm_tools/multi_process
 
-cp ${source_home}/sailbandwidth/LICENSE ${build_output}/comm_internal/comm_tools/licenses/LICENSE
-cp ${source_home}/sailbandwidth/LICENSE ${build_output}/comm_release/comm_tools/licenses/LICENSE
-cp ${source_home}/sailbandwidth/Licenses.txt ${build_output}/comm_internal/comm_tools/licenses/Licenses.txt
-cp ${source_home}/sailbandwidth/Licenses.txt ${build_output}/comm_release/comm_tools/licenses/Licenses.txt
+cp ${source_home}/sailbandwidth/LICENSE ${build_output}/comm_tools/licenses/LICENSE
+cp ${source_home}/sailbandwidth/Licenses.txt ${build_output}/comm_tools/licenses/Licenses.txt
 
-cd ${build_output}/comm_internal/ 
-tar -zcvf ${build_output}/comm_internal/"${pkg_name}.tar.gz" *
-ls | grep -v "${pkg_name}.tar.gz" | xargs rm -rf
-cd ${build_output}/comm_release/ 
-tar -zcvf ${build_output}/comm_release/"${pkg_name}.tar.gz" *
-ls | grep -v "${pkg_name}.tar.gz" | xargs rm -rf
+# One tarball per matrix row, with comm_tools/ at its top level. The staging tree is data, so
+# only it is removed afterwards.
+tar -zcvf "${build_output}/${pkg_name}.tar.gz" -C "${build_output}" comm_tools
+rm -rf "${build_output}/comm_tools"
 echo "BUILD sailbandwidth FINISHED"
