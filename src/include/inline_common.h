@@ -19,7 +19,7 @@
 #ifndef INLINE_COMMON_H_
 #define INLINE_COMMON_H_
 
-#include "ppu_common.h"
+#include "common.h"
 #include "error_handling.h"
 
 template <class T> struct PeerValueMatrix {

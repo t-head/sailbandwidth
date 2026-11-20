@@ -17,6 +17,10 @@
  */
 
 #include "kernels.cuh"
+#include "memcpy.h"
+#if 0
+#include <hggc_awbarrier_primitives.h>
+#endif
 
 union Pack128 {
   int4 i4;
@@ -481,7 +485,20 @@ __global__ void multicastCopyKernel(unsigned long long loopCount, unsigned int* 
     }
 }
 
-double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned long long latencyMemAccessCnt, unsigned smCount) {
+__global__ void ptrChasingKernelTMA(void *data, size_t size, unsigned int accesses, unsigned int targetBlock);
+
+void launchPtrChasingKernelSM(HGstream stream, void* data, size_t size,
+                             unsigned int accesses, unsigned int targetBlock, unsigned int smCount) {
+    ptrChasingKernel<<<smCount, 1, 0, stream>>>((struct LatencyNode*) data, size, accesses, targetBlock);
+}
+
+void launchPtrChasingKernelTMA(HGstream stream, void* data, size_t size,
+                              unsigned int accesses, unsigned int targetBlock, unsigned int smCount) {
+    ptrChasingKernelTMA <<<smCount, 1, 0, stream>>> (data, size, accesses, targetBlock);
+}
+
+double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned long long latencyMemAccessCnt,
+                            unsigned smCount, PtrChasingKernel kernel) {
     HGstream stream;
     int device, clock_rate_khz;
     double latencySum = 0.0f, finalLatencyPerAccessNs = 0.0;
@@ -499,7 +516,9 @@ double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned 
     HG_ASSERT(hgCtxGetDevice(&device));
     HG_ASSERT(hgDeviceGetAttribute(&clock_rate_khz, HG_DEVICE_ATTRIBUTE_CLOCK_RATE, device));
 
-    setCUMask(device, reinterpret_cast<const void *>(ptrChasingKernel));
+    if (kernel == launchPtrChasingKernelSM) {
+        setCUMask(device, reinterpret_cast<const void *>(ptrChasingKernel));
+    }
     int blocks = gSettings.nBlocks;
     if (blocks == -1) {
         blocks = smCount;
@@ -507,7 +526,7 @@ double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned 
     }
     for (int targetBlock = 0; targetBlock < blocks; ++targetBlock) {
         HGGC_ASSERT(hggcEventRecord(start, stream));
-        ptrChasingKernel<<<blocks, 1, 0, stream>>> ((struct LatencyNode*) data, size, latencyMemAccessCnt / blocks, targetBlock);
+        kernel(stream, data, size, latencyMemAccessCnt / blocks, targetBlock, blocks);
         HGGC_ASSERT(hggcEventRecord(end, stream));
         HGGC_ASSERT(hggcGetLastError());
         HG_ASSERT(hgStreamSynchronize(stream));
@@ -520,6 +539,183 @@ double latencyPtrChaseKernel(const int srcId, void* data, size_t size, unsigned 
     HGGC_ASSERT(hggcEventDestroy(end));
 
     return finalLatencyPerAccessNs;
+}
+
+#if 0
+inline __device__ __mbarrier_token_t barrier_arrive1_tx(
+__mbarrier_t *barrier, uint32_t expected_tx_count
+) {
+    __mbarrier_token_t token;
+
+    asm volatile("mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 %0, [%1], %2;"
+                 : "=l"(token)
+                 : "r"(static_cast<unsigned int>(__cvta_generic_to_shared(barrier))), "r"(expected_tx_count)
+                 : "memory");
+    return token;
+}
+
+inline __device__ bool barrier_try_wait_token(__mbarrier_t *barrier, __mbarrier_token_t token) {
+    int __ready;
+    asm volatile("{\n\t"
+                 ".reg .pred p;\n\t"
+                 "mbarrier.try_wait.acquire.cta.shared::cta.b64 p, [%1], %2;\n\t"
+                 "selp.b32 %0, 1, 0, p;\n\t"
+                 "}"
+                 : "=r"(__ready)
+                 : "r"(static_cast<unsigned int>(__cvta_generic_to_shared(barrier))),
+                 "l"(token)
+                 : "memory");
+    return __ready;
+}
+
+inline __device__ void cp_async_bulk_global_to_shared(void *dest, void * src, __mbarrier_t *barrier, int size) {
+    uint32_t smem_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(dest));
+    uint64_t gmem_ptr = static_cast<uint64_t>(__cvta_generic_to_global(src));
+    uint32_t smem_barrier_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(barrier));
+
+    asm volatile(
+        "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];\n"
+        :
+        : "r"(smem_ptr),
+          "l"(gmem_ptr),
+          "r"(size),
+          "r"(smem_barrier_ptr)
+        : "memory");
+}
+
+inline __device__ void cp_async_bulk_shared_to_global(void *dest, void * src, int size) {
+    uint64_t dest_gmem_ptr = static_cast<uint64_t>(__cvta_generic_to_global(dest));
+    uint32_t src_smem_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(src));
+
+    asm volatile(
+    "cp.async.bulk.global.shared::cta.bulk_group [%0], [%1], %2;\n"
+    :
+    : "l"(dest_gmem_ptr),
+      "r"(src_smem_ptr),
+      "r"(size)
+    : "memory");
+}
+
+inline __device__ void cp_async_bulk_commit_group() {
+    asm volatile("cp.async.bulk.commit_group;\n" ::: "memory");
+}
+
+inline __device__ void cp_async_bulk_wait_all_read() {
+    asm volatile("cp.async.bulk.wait_group.read 0; \n" ::: "memory");
+}
+#endif
+
+#if 0
+template <int chunk_size_bytes>
+struct SMEMPIPE {
+    alignas(16) char buf[chunk_size_bytes];
+    __mbarrier_t bar;
+};
+#endif
+
+static constexpr int TMA_COPY_WARPS      = 4;
+static constexpr int TMA_COPY_THREADS    = TMA_COPY_WARPS * WARP_SIZE;
+static constexpr int TMA_COPY_BLK_PER_SM = 2;
+static constexpr size_t TMA_COPY_CHUNK   = 28672;
+static constexpr size_t TMA_SMEM_ALIGN   = 128;
+
+__global__ void tma_memcpy_kernel(char* dest, char *src, size_t num_bytes, unsigned long long loopCount, size_t chunkSize) {
+#if 0
+    extern __shared__ char smem_bytes[];
+
+    __shared__ __mbarrier_t load_bar[TMA_COPY_WARPS];
+
+    const int lane = threadIdx.x % WARP_SIZE;
+    const int warp = threadIdx.x / WARP_SIZE;
+
+    char* smem_aligned = (char*)(((size_t)smem_bytes + TMA_SMEM_ALIGN - 1) & ~(TMA_SMEM_ALIGN - 1));
+    char* warp_buf = smem_aligned + warp * chunkSize;
+
+    if (lane == 0) {
+        __mbarrier_init(&load_bar[warp], 1);
+    }
+
+    size_t warp_offset = (size_t)(blockIdx.x * TMA_COPY_WARPS + warp) * chunkSize;
+    size_t grid_stride = (size_t)gridDim.x * TMA_COPY_WARPS * chunkSize;
+
+    for (unsigned long long loop = 0; loop < loopCount; loop++) {
+        #pragma unroll 4
+        for (size_t offset = warp_offset; offset < num_bytes; offset += grid_stride) {
+            size_t chunk = min(chunkSize, num_bytes - offset);
+            if (lane == 0) {
+                cp_async_bulk_global_to_shared(warp_buf, src + offset, &load_bar[warp], (int)chunk);
+                __mbarrier_token_t token = barrier_arrive1_tx(&load_bar[warp], (uint32_t)chunk);
+                while (!barrier_try_wait_token(&load_bar[warp], token)) {}
+                cp_async_bulk_shared_to_global(dest + offset, warp_buf, (int)chunk);
+                cp_async_bulk_commit_group();
+                cp_async_bulk_wait_all_read();
+            }
+        }
+    }
+#endif
+}
+
+__global__ void ptrChasingKernelTMA(void *data, size_t size, unsigned int accesses, unsigned int targetBlock) {
+#if 0
+    if (blockIdx.x != targetBlock) return;
+
+    __shared__ SMEMPIPE<sizeof(struct TMALatencyNode)> smem;
+    __mbarrier_init(&smem.bar, 1);
+
+    struct TMALatencyNode* smem_aligned = reinterpret_cast<struct TMALatencyNode*>(&smem.buf[0]);
+
+    struct TMALatencyNode *p = static_cast<struct TMALatencyNode*>(data);
+    for (auto i = 0; i < accesses; ++i) {
+        cp_async_bulk_global_to_shared(&smem_aligned->next, p, &smem.bar, sizeof(struct TMALatencyNode));
+        __mbarrier_token_t token = barrier_arrive1_tx(&smem.bar, sizeof(struct TMALatencyNode));
+        while (!barrier_try_wait_token(&smem.bar, token)) {}
+
+        p = smem_aligned->next;
+    }
+
+    if (p == nullptr) {
+        __trap();
+    }
+#endif
+}
+
+size_t copyKernelTMA(MemcpyDescriptor &desc) {
+    HGdevice dev;
+    HGcontext ctx;
+    HGstream stream = desc.mainstream;
+
+    HG_ASSERT(hgStreamGetCtx(stream, &ctx));
+    HG_ASSERT(hgCtxGetDevice(&dev));
+
+    int numSm;
+    HG_ASSERT(hgDeviceGetAttribute(&numSm, HG_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev));
+    ADJUST_SM_COUNT_FOR_SINGLE_DIE(numSm);
+
+    HGdeviceptr dst = desc.dstBuffer->getBuffer();
+    HGdeviceptr src = desc.srcBuffer->getBuffer();
+    if (desc.copySize % 16 != 0 || (size_t) src % 16 != 0 || (size_t) dst % 16 != 0) {
+        std::cerr << "ERROR: TMA copy requires 16-byte alignment. copySize=" << desc.copySize
+                  << " src=" << src << " dst=" << dst << std::endl;
+        return 0;
+    }
+
+    setCUMask(dev, reinterpret_cast<const void *>(tma_memcpy_kernel));
+    hggcFuncAttributes attrs = {};
+    HGGC_ASSERT(hggcFuncGetAttributes(&attrs, tma_memcpy_kernel));
+
+    size_t effectiveChunk = min((size_t)TMA_COPY_CHUNK,
+                                (((size_t)attrs.maxDynamicSharedSizeBytes - TMA_SMEM_ALIGN) / TMA_COPY_WARPS) & ~(TMA_SMEM_ALIGN - 1));
+    size_t effectiveSmem = TMA_COPY_WARPS * effectiveChunk + TMA_SMEM_ALIGN;
+
+    HGGC_ASSERT(hggcFuncSetAttribute(tma_memcpy_kernel, hggcFuncAttributeMaxDynamicSharedMemorySize, (int)effectiveSmem));
+
+    size_t numChunks = (desc.copySize + effectiveChunk - 1) / effectiveChunk;
+    int numBlocks = min((int)numChunks, numSm * TMA_COPY_BLK_PER_SM);
+    if (numBlocks < 1) numBlocks = 1;
+    tma_memcpy_kernel<<<numBlocks, TMA_COPY_THREADS, effectiveSmem, stream>>>(
+        (char*)dst, (char*)src, desc.copySize, desc.loopCount, effectiveChunk);
+
+    return desc.copySize;
 }
 
 size_t copyKernel(MemcpyDescriptor &desc) {
@@ -1061,6 +1257,7 @@ void preloadKernels(int deviceCount) {
         hggcFuncGetAttributes(&unused, &memclearKernelByWarpParityDevice);
         hggcFuncGetAttributes(&unused, &memcmpKernelDevice);
         hggcFuncGetAttributes(&unused, &multicastMemcmpKernelDevice);
+        // hggcFuncGetAttributes(&unused, &tma_memcpy_kernel);
     }
 }
 

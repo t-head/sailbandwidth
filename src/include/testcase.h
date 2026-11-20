@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * Modifications Copyright (c) 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -19,11 +19,165 @@
 #ifndef TESTCASE_H_
 #define TESTCASE_H_
 
-
 #include "inline_common.h"
-#include "ppu_common.h"
 #include "common.h"
 #include "memcpy.h"
+
+#include <map>
+#include <regex>
+#include <memory>
+#include <functional>
+#include <utility>
+
+// Specifies the copy initiator/engine to use.
+enum class CopyInitiator {
+    CE,     // Copy Engine (hgMemcpyAsync)
+    SM,     // Shader/SM copy kernel
+    TMA
+};
+
+// Specifies the transfer direction for host-device copies
+enum class Direction {
+    HostToDevice,
+    DeviceToHost
+};
+
+class HostDeviceTransferDirectionStrategy {
+ public:
+    virtual ~HostDeviceTransferDirectionStrategy() = default;
+
+    // Returns (src, dst) pair in correct order for the transfer direction
+    virtual std::pair<const MemcpyBuffer*, const MemcpyBuffer*>
+        getOrderedBuffers(const HostBuffer& host, const DeviceBuffer& device) const = 0;
+
+    // For output label formatting
+    virtual std::string getDirectionArrow() const = 0;
+    virtual std::string getName() const = 0;
+};
+
+class HostToDeviceDirection : public HostDeviceTransferDirectionStrategy {
+ public:
+    std::pair<const MemcpyBuffer*, const MemcpyBuffer*>
+    getOrderedBuffers(const HostBuffer& host, const DeviceBuffer& device) const override {
+        return {&host, &device};
+    }
+    std::string getDirectionArrow() const override { return "->"; }
+    std::string getName() const override { return "host_to_device"; }
+};
+
+class DeviceToHostDirection : public HostDeviceTransferDirectionStrategy {
+ public:
+    std::pair<const MemcpyBuffer*, const MemcpyBuffer*>
+    getOrderedBuffers(const HostBuffer& host, const DeviceBuffer& device) const override {
+        return {&device, &host};
+    }
+    std::string getDirectionArrow() const override { return "<-"; }
+    std::string getName() const override { return "device_to_host"; }
+};
+
+// Specifies the access type for device-to-device copies
+enum class AccessType {
+    Read,   // Copy from peer to target (PREFER_DST_CONTEXT)
+    Write   // Copy from target to peer (PREFER_SRC_CONTEXT)
+};
+
+// Strategy interface for device-to-device access type (for buffer ordering and context preference)
+class DeviceToDeviceAccessStrategy {
+ public:
+    virtual ~DeviceToDeviceAccessStrategy() = default;
+
+    // Returns (src, dst) pair in correct order for the access type
+    virtual std::pair<const MemcpyBuffer*, const MemcpyBuffer*>
+        getOrderedBuffers(const MemcpyBuffer& srcBuffer, const MemcpyBuffer& peerBuffer) const = 0;
+
+    // Returns context preference for MemcpyOperation
+    virtual ContextPreference getContextPreference() const = 0;
+};
+
+class ReadAccessStrategy : public DeviceToDeviceAccessStrategy {
+ public:
+    std::pair<const MemcpyBuffer*, const MemcpyBuffer*>
+    getOrderedBuffers(const MemcpyBuffer& srcBuffer, const MemcpyBuffer& peerBuffer) const override {
+        return {&peerBuffer, &srcBuffer};  // Read FROM peer TO src
+    }
+    ContextPreference getContextPreference() const override { return PREFER_DST_CONTEXT; }
+};
+
+class WriteAccessStrategy : public DeviceToDeviceAccessStrategy {
+ public:
+    std::pair<const MemcpyBuffer*, const MemcpyBuffer*>
+    getOrderedBuffers(const MemcpyBuffer& srcBuffer, const MemcpyBuffer& peerBuffer) const override {
+        return {&srcBuffer, &peerBuffer};  // Write FROM src TO peer
+    }
+    ContextPreference getContextPreference() const override { return PREFER_SRC_CONTEXT; }
+};
+
+// Holds a pair of buffers for src and peer devices
+class BufferPair {
+ public:
+    std::unique_ptr<MemcpyBuffer> src;
+    std::unique_ptr<MemcpyBuffer> peer;
+
+    BufferPair(std::unique_ptr<MemcpyBuffer> s, std::unique_ptr<MemcpyBuffer> p)
+        : src(std::move(s)), peer(std::move(p)) {}
+};
+
+// Abstract interface for buffer type-specific operations
+class BufferTypeStrategy {
+ public:
+    virtual ~BufferTypeStrategy() = default;
+
+    // Check if this buffer type is supported on the system
+    virtual bool isSupported() const = 0;
+
+    // Create a pair of buffers for the given devices
+    virtual std::unique_ptr<BufferPair> createBufferPair(
+        size_t size, int srcDeviceId, int peerDeviceId) const = 0;
+
+    // Enable peer access between buffers, returns false if not possible
+    virtual bool enablePeerAccess(BufferPair& pair) const = 0;
+
+    // Label for output/error messages
+    virtual std::string getLabel() const = 0;
+};
+
+// Implementation for standard DeviceBuffer
+class DeviceBufferStrategy : public BufferTypeStrategy {
+ public:
+    bool isSupported() const override { return true; }
+
+    std::unique_ptr<BufferPair> createBufferPair(
+            size_t size, int srcDeviceId, int peerDeviceId) const override {
+        return std::make_unique<BufferPair>(
+            std::unique_ptr<MemcpyBuffer>(new DeviceBuffer(size, srcDeviceId)),
+            std::unique_ptr<MemcpyBuffer>(new DeviceBuffer(size, peerDeviceId)));
+    }
+
+    bool enablePeerAccess(BufferPair& pair) const override {
+        return static_cast<DeviceBuffer&>(*pair.src).enablePeerAccess(static_cast<DeviceBuffer&>(*pair.peer));
+    }
+
+    std::string getLabel() const override { return "Device"; }
+};
+
+// Read-only peer mappings keep PPU CE reads from being converted into writes.
+class DeviceBufferVmStrategy : public BufferTypeStrategy {
+ public:
+    bool isSupported() const override { return true; }
+
+    std::unique_ptr<BufferPair> createBufferPair(
+            size_t size, int srcDeviceId, int peerDeviceId) const override {
+        return std::make_unique<BufferPair>(
+            std::unique_ptr<MemcpyBuffer>(new DeviceBufferVm(size, srcDeviceId)),
+            std::unique_ptr<MemcpyBuffer>(new DeviceBufferVm(size, peerDeviceId)));
+    }
+
+    bool enablePeerAccess(BufferPair& pair) const override {
+        return static_cast<DeviceBufferVm&>(*pair.src).enableReadOnlyAccessFromPeer(static_cast<DeviceBufferVm&>(*pair.peer));
+    }
+
+    std::string getLabel() const override { return "Device VM"; }
+};
 
 /* Carries waiver reason when a test cannot run on the current system */
 struct [[nodiscard]] FilterResult {
@@ -42,14 +196,21 @@ class Testcase {
     std::string key;
     std::string desc;
 
+    // Type alias for all-to-one and one-to-all buffer pairing callback
+    using allToOneOneToAllCallback = std::function<void(int oneDeviceId,
+                                                         std::vector<const MemcpyBuffer*>& allBuffers,
+                                                         std::vector<const MemcpyBuffer*>& oneBuffers)>;
+
     static FilterResult filterHasAccessiblePeerPairs();
     static FilterResult filterSupportsMulticast();
+    static FilterResult filterSupportsTMA();
 #ifdef MULTINODE
     static FilterResult filterHasMultiplePPUsMultinode();
 #endif
     // helper functions
-    void allToOneHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead);
-    void oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool isRead);
+    void forEachAllToOneBufferPairing(unsigned long long size, MemcpyOperation &memcpyInstance, bool isAllToOne, allToOneOneToAllCallback callback);
+    void allToOneHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues);
+    void oneToAllHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues);
     void allHostHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost);
     void allHostBidirHelper(unsigned long long size, MemcpyOperation &memcpyInstance, PeerValueMatrix<double> &bandwidthValues, bool sourceIsHost);
 
@@ -63,7 +224,72 @@ class Testcase {
         }
     }
 
+    template<typename AlignedLatencyNode = struct LatencyNode>
     void latencyHelper(const MemcpyBuffer &dataBuffer, bool measureDeviceToDeviceLatency);
+
+    static std::map<std::string, std::map<std::string, std::shared_ptr<PeerValueMatrix<double>>>> globalTestCache;
+
+    static std::string getComplementaryCacheKey(const std::string& testKey) {
+        static std::vector<std::pair<std::string, std::string>> pairs = {
+            {"all_to_host", "host_to_all"},
+            {"host_to_device", "device_to_host"},
+            {"_read", "_write"}
+        };
+
+        for (const auto& pair : pairs) {
+            if (testKey.find(pair.first) != std::string::npos) {
+                return std::regex_replace(testKey, std::regex(pair.first), pair.second);
+            } else if (testKey.find(pair.second) != std::string::npos) {
+                return std::regex_replace(testKey, std::regex(pair.second), pair.first);
+            }
+        }
+        return "";
+    }
+
+    template<typename TestExecutor>
+    void runWithCache(PeerValueMatrix<double>& result, TestExecutor executor) {
+        std::string complementaryKey = getComplementaryCacheKey(key);
+        if (gSettings.performanceCacheEnabled() && !complementaryKey.empty() && globalTestCache.count(complementaryKey) &&
+            globalTestCache[complementaryKey].count(key) &&
+            globalTestCache[complementaryKey][key] != nullptr) {
+            result = *globalTestCache[complementaryKey][key];
+            return;
+        }
+
+        executor();
+
+        globalTestCache[key][key] = std::make_shared<PeerValueMatrix<double>>(result);
+    }
+
+    // Symmetric caching for device-to-device pairs
+    template<typename TestExecutor>
+    void cachedPairLoop(const std::vector<std::pair<int, int>>& pairs,
+                       PeerValueMatrix<double>& matrix1,
+                       PeerValueMatrix<double>& matrix2,
+                       PeerValueMatrix<double>& matrixTotal,
+                       TestExecutor executor) {
+        for (const auto& pair : pairs) {
+            int src = pair.first, dst = pair.second;
+
+            // Reversing the pair swaps the two directional results.
+            if (gSettings.performanceCacheEnabled() && src > dst && matrix1.value(dst, src).has_value()) {
+                matrix1.value(src, dst) = matrix2.value(dst, src);
+                matrix2.value(src, dst) = matrix1.value(dst, src);
+                matrixTotal.value(src, dst) = matrixTotal.value(dst, src);
+                continue;
+            }
+
+            auto results = executor(src, dst);
+            if (results.empty()) {
+                continue;
+            }
+            ASSERT(results.size() == 2);
+
+            matrix1.value(src, dst) = results[0];
+            matrix2.value(src, dst) = results[1];
+            matrixTotal.value(src, dst) = results[0] + results[1];
+        }
+    }
 
  public:
     Testcase(std::string key, std::string desc);
@@ -88,428 +314,101 @@ inline bool isPpuPairEndpoint(int deviceId) {
     return deviceId == ppuPairDev0 || deviceId == ppuPairDev1;
 }
 
-// CE Testcase classes
+// Host-Device transfer test
+class HostDeviceTransfer : public Testcase {
+    CopyInitiator initiator_;
+    std::unique_ptr<HostDeviceTransferDirectionStrategy> directionStrategy_;
 
-// Host to device CE memcpy using hgMemcpyAsync
-class HostToDeviceCE: public Testcase {
  public:
-    HostToDeviceCE() : Testcase("host_to_device_memcpy_ce",
-            "\tHost to device CE memcpy using hgMemcpyAsync") {}
-    virtual ~HostToDeviceCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Device to host CE memcpy using hgMemcpyAsync
-class DeviceToHostCE: public Testcase {
- public:
-    DeviceToHostCE() : Testcase("device_to_host_memcpy_ce",
-            "\tDevice to host CE memcpy using hgMemcpyAsync") {}
-    virtual ~DeviceToHostCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to device bidirectional CE memcpy using hgMemcpyAsync
-class HostToDeviceBidirCE: public Testcase {
- public:
-    HostToDeviceBidirCE() : Testcase("host_to_device_bidirectional_memcpy_ce",
-            "\tA host to device copy is measured while a device to host copy is run simultaneously.\n"
-            "\tOnly the host to device copy bandwidth is reported.") {}
-    virtual ~HostToDeviceBidirCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Device to host bidirectional CE memcpy using hgMemcpyAsync
-class DeviceToHostBidirCE: public Testcase {
- public:
-    DeviceToHostBidirCE() : Testcase("device_to_host_bidirectional_memcpy_ce",
-            "\tA device to host copy is measured while a host to device copy is run simultaneously.\n"
-            "\tOnly the device to host copy bandwidth is reported.") {}
-    virtual ~DeviceToHostBidirCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to device bidirectional SM memcpy
-class HostToDeviceBidirSM: public Testcase {
- public:
-    HostToDeviceBidirSM() : Testcase("host_to_device_bidirectional_memcpy_sm",
-            "\tA host to device copy is measured while a device to host copy is run simultaneously.\n"
-            "\tOnly the host to device copy bandwidth is reported.") {}
-    virtual ~HostToDeviceBidirSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Device to host bidirectional SM memcpy
-class DeviceToHostBidirSM: public Testcase {
- public:
-    DeviceToHostBidirSM() : Testcase("device_to_host_bidirectional_memcpy_sm",
-            "\tA device to host copy is measured while a host to device copy is run simultaneously.\n"
-            "\tOnly the device to host copy bandwidth is reported.") {}
-    virtual ~DeviceToHostBidirSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Device to Device CE Read memcpy using hgMemcpyAsync
-class DeviceToDeviceReadCE: public Testcase {
- public:
-    DeviceToDeviceReadCE() : Testcase("device_to_device_memcpy_read_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~DeviceToDeviceReadCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device CE Write memcpy using hgMemcpyAsync
-class DeviceToDeviceWriteCE: public Testcase {
- public:
-    DeviceToDeviceWriteCE() : Testcase("device_to_device_memcpy_write_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~DeviceToDeviceWriteCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device Bidirectional Read CE memcpy using hgMemcpyAsync
-class DeviceToDeviceBidirReadCE: public Testcase {
- public:
-    DeviceToDeviceBidirReadCE() : Testcase("device_to_device_bidirectional_memcpy_read_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tCopies run in both directions concurrently; each direction's bandwidth and their sum are reported.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~DeviceToDeviceBidirReadCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device Bidirectional Write CE memcpy using hgMemcpyAsync
-class DeviceToDeviceBidirWriteCE: public Testcase {
- public:
-    DeviceToDeviceBidirWriteCE() : Testcase("device_to_device_bidirectional_memcpy_write_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tCopies run in both directions concurrently; each direction's bandwidth and their sum are reported.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~DeviceToDeviceBidirWriteCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device local memcpy using hgMemcpyAsync
-class DeviceLocalCopy: public Testcase {
- public:
-    DeviceLocalCopy() : Testcase("device_local_copy",
-            "\tMeasures bandwidth of hgMemcpyAsync between device buffers local to the PPU.\n") {}
-    virtual ~DeviceLocalCopy() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// All to Host CE memcpy using hgMemcpyAsync
-class AllToHostCE: public Testcase {
- public:
-    AllToHostCE() : Testcase("all_to_host_memcpy_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between a single device and the host while simultaneously\n"
-            "\trunning copies from all other devices to the host.") {}
-    virtual ~AllToHostCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// All to Host bidirectional CE memcpy using hgMemcpyAsync
-class AllToHostBidirCE: public Testcase {
- public:
-    AllToHostBidirCE() : Testcase("all_to_host_bidirectional_memcpy_ce",
-            "\tA device to host copy is measured while a host to device copy is run simultaneously.\n"
-            "\tOnly the device to host copy bandwidth is reported.\n"
-            "\tAll other devices generate simultaneous host to device and device to host interfering traffic.") {}
-    virtual ~AllToHostBidirCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to All CE memcpy using hgMemcpyAsync
-class HostToAllCE: public Testcase {
- public:
-    HostToAllCE() : Testcase("host_to_all_memcpy_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync from the host to a single device while simultaneously\n"
-            "\trunning copies from the host to all other devices.") {}
-    virtual ~HostToAllCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to All bidirectional CE memcpy using hgMemcpyAsync
-class HostToAllBidirCE: public Testcase {
- public:
-    HostToAllBidirCE() : Testcase("host_to_all_bidirectional_memcpy_ce",
-            "\tA host to device copy is measured while a device to host copy is run simultaneously.\n"
-            "\tOnly the host to device copy bandwidth is reported.\n"
-            "\tAll other devices generate simultaneous host to device and device to host interfering traffic.") {}
-    virtual ~HostToAllBidirCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-
-// All to One CE Write memcpy using hgMemcpyAsync
-class AllToOneWriteCE: public Testcase {
- public:
-    AllToOneWriteCE() : Testcase("all_to_one_write_ce",
-            "\tMeasures the total bandwidth of copies from all accessible peers to a single device, for each\n"
-            "\tdevice. Bandwidth is reported as the total inbound bandwidth for each device.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~AllToOneWriteCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// All to One CE Read memcpy using hgMemcpyAsync
-class AllToOneReadCE: public Testcase {
- public:
-    AllToOneReadCE() : Testcase("all_to_one_read_ce",
-            "\tMeasures the total bandwidth of copies from a single device to all accessible peers, for each\n"
-            "\tdevice. Bandwidth is reported as the total outbound bandwidth for each device.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~AllToOneReadCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// One to All CE Write memcpy using hgMemcpyAsync
-class OneToAllWriteCE: public Testcase {
- public:
-    OneToAllWriteCE() : Testcase("one_to_all_write_ce",
-            "\tMeasures the total bandwidth of copies from a single device to all accessible peers, for each\n"
-            "\tdevice. Bandwidth is reported as the total outbound bandwidth for each device.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~OneToAllWriteCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// One to All CE Read memcpy using hgMemcpyAsync
-class OneToAllReadCE: public Testcase {
- public:
-    OneToAllReadCE() : Testcase("one_to_all_read_ce",
-            "\tMeasures the total bandwidth of copies from all accessible peers to a single device, for each\n"
-            "\tdevice. Bandwidth is reported as the total inbound bandwidth for each device.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~OneToAllReadCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// SM Testcase classes
-// Host to device SM latency using a ptr chase kernel
-class HostDeviceLatencySM: public Testcase {
- public:
-    HostDeviceLatencySM() : Testcase("host_device_latency_sm",
-            "\tHost - device access latency using a pointer chase kernel\n"
-            "\tA 2MB buffer is allocated on the host and is accessed by the PPU") {}
-    virtual ~HostDeviceLatencySM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to device SM memcpy using a copy kernel
-class HostToDeviceSM: public Testcase {
- public:
-    HostToDeviceSM() : Testcase("host_to_device_memcpy_sm",
-            "\tHost to device SM memcpy using a copy kernel") {}
-    virtual ~HostToDeviceSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Device to host SM memcpy using a copy kernel
-class DeviceToHostSM: public Testcase {
- public:
-    DeviceToHostSM() : Testcase("device_to_host_memcpy_sm",
-            "\tDevice to host SM memcpy using a copy kernel") {}
-    virtual ~DeviceToHostSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Device to Device SM Read memcpy using a copy kernel
-class DeviceToDeviceReadSM: public Testcase {
- public:
-    DeviceToDeviceReadSM() : Testcase("device_to_device_memcpy_read_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~DeviceToDeviceReadSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device SM Latency ptr chase kernel
-class DeviceToDeviceLatencySM: public Testcase {
- public:
-    DeviceToDeviceLatencySM() : Testcase("device_to_device_latency_sm",
-            "\tMeasures latency of a pointer dereference operation between each pair of accessible peers.\n"
-            "\tA 2MB buffer is allocated on a PPU and is accessed by the peer PPU to determine latency.\n"
-            "\t--bufferSize flag is ignored") {}
-    virtual ~DeviceToDeviceLatencySM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device SM Write memcpy using a copy kernel
-class DeviceToDeviceWriteSM: public Testcase {
- public:
-    DeviceToDeviceWriteSM() : Testcase("device_to_device_memcpy_write_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~DeviceToDeviceWriteSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device bidirectional SM Read memcpy using a copy kernel
-class DeviceToDeviceBidirReadSM: public Testcase {
- public:
-    DeviceToDeviceBidirReadSM() : Testcase("device_to_device_bidirectional_memcpy_read_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers. Copies are run\n"
-            "\tin both directions between each pair, and the sum is reported.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~DeviceToDeviceBidirReadSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// Device to Device bidirectional SM Write memcpy using a copy kernel
-class DeviceToDeviceBidirWriteSM: public Testcase {
- public:
-    DeviceToDeviceBidirWriteSM() : Testcase("device_to_device_bidirectional_memcpy_write_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers. Copies are run\n"
-            "\tin both directions between each pair, and the sum is reported.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~DeviceToDeviceBidirWriteSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// All to Host SM memcpy using a copy kernel
-class AllToHostSM: public Testcase {
- public:
-    AllToHostSM() : Testcase("all_to_host_memcpy_sm",
-            "\tMeasures bandwidth of a copy kernel between a single device and the host while simultaneously\n"
-            "\trunning copies from all other devices to the host.") {}
-    virtual ~AllToHostSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// All to Host bidirectional SM memcpy using a copy kernel
-class AllToHostBidirSM: public Testcase {
- public:
-    AllToHostBidirSM() : Testcase("all_to_host_bidirectional_memcpy_sm",
-            "\tA device to host bandwidth of a copy kernel is measured while a host to device copy is run simultaneously.\n"
-            "\tOnly the device to host copy bandwidth is reported.\n"
-            "\tAll other devices generate simultaneous host to device and device to host interfering traffic using copy kernels.") {}
-    virtual ~AllToHostBidirSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to All SM memcpy using a copy kernel
-class HostToAllSM: public Testcase {
- public:
-    HostToAllSM() : Testcase("host_to_all_memcpy_sm",
-            "\tMeasures bandwidth of a copy kernel from the host to a single device while simultaneously\n"
-            "\trunning copies from the host to all other devices.") {}
-    virtual ~HostToAllSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// Host to All bidirectional SM memcpy using a copy kernel
-class HostToAllBidirSM: public Testcase {
- public:
-    HostToAllBidirSM() : Testcase("host_to_all_bidirectional_memcpy_sm",
-            "\tA host to device bandwidth of a copy kernel is measured while a device to host copy is run simultaneously.\n"
-            "\tOnly the host to device copy bandwidth is reported.\n"
-            "\tAll other devices generate simultaneous host to device and device to host interfering traffic using copy kernels.") {}
-    virtual ~HostToAllBidirSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-};
-
-// All to One SM Write memcpy using a copy kernel
-class AllToOneWriteSM: public Testcase {
- public:
-    AllToOneWriteSM() : Testcase("all_to_one_write_sm",
-            "\tMeasures the total bandwidth of copies from all accessible peers to a single device, for each\n"
-            "\tdevice. Bandwidth is reported as the total inbound bandwidth for each device.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~AllToOneWriteSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// All to One SM Read memcpy using a copy kernel
-class AllToOneReadSM: public Testcase {
- public:
-    AllToOneReadSM() : Testcase("all_to_one_read_sm",
-            "\tMeasures the total bandwidth of copies from a single device to all accessible peers, for each\n"
-            "\tdevice. Bandwidth is reported as the total outbound bandwidth for each device.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~AllToOneReadSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// One to All SM Write memcpy using a copy kernel
-class OneToAllWriteSM: public Testcase {
- public:
-    OneToAllWriteSM() : Testcase("one_to_all_write_sm",
-            "\tMeasures the total bandwidth of copies from a single device to all accessible peers, for each\n"
-            "\tdevice. Bandwidth is reported as the total outbound bandwidth for each device.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~OneToAllWriteSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-// One to All SM Read memcpy using a copy kernel
-class OneToAllReadSM: public Testcase {
- public:
-    OneToAllReadSM() : Testcase("one_to_all_read_sm",
-            "\tMeasures the total bandwidth of copies from all accessible peers to a single device, for each\n"
-            "\tdevice. Bandwidth is reported as the total inbound bandwidth for each device.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~OneToAllReadSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasAccessiblePeerPairs();
-    }
-};
-
-class DeviceLocalCopySM : public Testcase {
- public:
-    DeviceLocalCopySM() : Testcase("device_local_copy_sm", "\tMeasures bandwidth of SM copies between local device buffers.") {
-    }
+    HostDeviceTransfer(CopyInitiator initiator, Direction direction);
+    virtual ~HostDeviceTransfer() {}
     void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::unique_ptr<HostDeviceTransferDirectionStrategy> createDirectionStrategy(Direction dir);
+    static std::string generateKey(CopyInitiator initiator, Direction direction);
+    static std::string generateDesc(CopyInitiator initiator, Direction direction);
+    std::string buildOutputLabel() const;
+};
+
+// Host-Device bidirectional transfer test (CE/SM)
+class HostDeviceBidirTransfer : public Testcase {
+    CopyInitiator initiator_;
+    Direction direction_;
+
+ public:
+    HostDeviceBidirTransfer(CopyInitiator initiator, Direction direction);
+    virtual ~HostDeviceBidirTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator, Direction direction);
+    static std::string generateDesc(CopyInitiator initiator, Direction direction);
+    std::string buildOutputLabel() const;
+};
+
+// Device-to-device transfer test (CE/SM) - Read/Write
+class DeviceToDeviceTransfer : public Testcase {
+    CopyInitiator initiator_;
+    AccessType accessType_;
+    std::unique_ptr<DeviceToDeviceAccessStrategy> accessStrategy_;
+    std::unique_ptr<BufferTypeStrategy> bufferStrategy_;
+
+ public:
+    DeviceToDeviceTransfer(CopyInitiator initiator, AccessType accessType);
+    virtual ~DeviceToDeviceTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    std::unique_ptr<BufferTypeStrategy> createBufferStrategy() const;
+    static std::unique_ptr<DeviceToDeviceAccessStrategy> createAccessStrategy(AccessType accessType);
+    static std::string generateKey(CopyInitiator initiator, AccessType accessType);
+    static std::string generateDesc(CopyInitiator initiator, AccessType accessType);
+    std::string buildOutputLabel() const;
+};
+
+// Device-to-device bidirectional transfer test (CE/SM) - Read/Write
+class DeviceToDeviceBidirTransfer : public Testcase {
+    CopyInitiator initiator_;
+    AccessType accessType_;
+    std::unique_ptr<DeviceToDeviceAccessStrategy> accessStrategy_;
+    std::unique_ptr<BufferTypeStrategy> bufferStrategy_;
+
+ public:
+    DeviceToDeviceBidirTransfer(CopyInitiator initiator, AccessType accessType);
+    virtual ~DeviceToDeviceBidirTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    std::unique_ptr<BufferTypeStrategy> createBufferStrategy() const;
+    static std::unique_ptr<DeviceToDeviceAccessStrategy> createAccessStrategy(AccessType accessType);
+    static std::string generateKey(CopyInitiator initiator, AccessType accessType);
+    static std::string generateDesc(CopyInitiator initiator, AccessType accessType);
+    std::string buildOutputLabel(const std::string& suffix) const;
+};
+
+// Device local copy transfer test
+class DeviceLocalCopyTransfer : public Testcase {
+    CopyInitiator initiator_;
+
+ public:
+    explicit DeviceLocalCopyTransfer(CopyInitiator initiator);
+    virtual ~DeviceLocalCopyTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator);
+    static std::string generateDesc(CopyInitiator initiator);
+    std::string buildOutputLabel() const;
 };
 
 class DeviceLocalReadSM : public Testcase {
@@ -526,113 +425,190 @@ class DeviceLocalWriteSM : public Testcase {
     void run(unsigned long long size, unsigned long long loopCount) override;
 };
 
+// All-to-host transfer test
+class AllToHostTransfer : public Testcase {
+    CopyInitiator initiator_;
+
+ public:
+    explicit AllToHostTransfer(CopyInitiator initiator);
+    virtual ~AllToHostTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator);
+    static std::string generateDesc(CopyInitiator initiator);
+    std::string buildOutputLabel() const;
+};
+
+// All-to-host bidirectional transfer test
+class AllToHostBidirTransfer : public Testcase {
+    CopyInitiator initiator_;
+
+ public:
+    explicit AllToHostBidirTransfer(CopyInitiator initiator);
+    virtual ~AllToHostBidirTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator);
+    static std::string generateDesc(CopyInitiator initiator);
+    std::string buildOutputLabel() const;
+};
+
+// Host-to-all transfer test
+class HostToAllTransfer : public Testcase {
+    CopyInitiator initiator_;
+
+ public:
+    explicit HostToAllTransfer(CopyInitiator initiator);
+    virtual ~HostToAllTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator);
+    static std::string generateDesc(CopyInitiator initiator);
+    std::string buildOutputLabel() const;
+};
+
+// Host-to-all bidirectional transfer test
+class HostToAllBidirTransfer : public Testcase {
+    CopyInitiator initiator_;
+
+ public:
+    explicit HostToAllBidirTransfer(CopyInitiator initiator);
+    virtual ~HostToAllBidirTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator);
+    static std::string generateDesc(CopyInitiator initiator);
+    std::string buildOutputLabel() const;
+};
+
+// All-to-one transfer test
+class AllToOneTransfer : public Testcase {
+    CopyInitiator initiator_;
+    AccessType accessType_;
+    std::unique_ptr<DeviceToDeviceAccessStrategy> accessStrategy_;
+
+ public:
+    AllToOneTransfer(CopyInitiator initiator, AccessType accessType);
+    virtual ~AllToOneTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::unique_ptr<DeviceToDeviceAccessStrategy> createAccessStrategy(AccessType accessType);
+    static std::string generateKey(CopyInitiator initiator, AccessType accessType);
+    static std::string generateDesc(CopyInitiator initiator, AccessType accessType);
+    std::string buildOutputLabel() const;
+};
+
+// One-to-all transfer test
+class OneToAllTransfer : public Testcase {
+    CopyInitiator initiator_;
+    AccessType accessType_;
+    std::unique_ptr<DeviceToDeviceAccessStrategy> accessStrategy_;
+
+ public:
+    OneToAllTransfer(CopyInitiator initiator, AccessType accessType);
+    virtual ~OneToAllTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::unique_ptr<DeviceToDeviceAccessStrategy> createAccessStrategy(AccessType accessType);
+    static std::string generateKey(CopyInitiator initiator, AccessType accessType);
+    static std::string generateDesc(AccessType accessType);
+    std::string buildOutputLabel() const;
+};
+
+// SM Testcase classes
+// Host to device SM latency using a ptr chase kernel
+class HostDeviceLatencySM: public Testcase {
+ public:
+    HostDeviceLatencySM() : Testcase("host_device_latency_sm",
+            "\tHost - device access latency using a pointer chase kernel\n"
+            "\tA 2MB buffer is allocated on the host and is accessed by the PPU") {}
+    virtual ~HostDeviceLatencySM() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+};
+
+// Device to Device SM Latency ptr chase kernel
+class DeviceToDeviceLatencySM: public Testcase {
+ public:
+    DeviceToDeviceLatencySM() : Testcase("device_to_device_latency_sm",
+            "\tMeasures latency of a pointer dereference operation between each pair of accessible peers.\n"
+            "\tA 2MB buffer is allocated on a PPU and is accessed by the peer PPU to determine latency.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceLatencySM() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+    FilterResult filter() {
+        if (deviceCount > 0 && gSettings.testLocalCopy && !hasPpuPair()) {
+            return FilterResult::pass();
+        }
+        return Testcase::filterHasAccessiblePeerPairs();
+    }
+};
+
+class DeviceToDeviceLatencyTMA: public Testcase {
+ public:
+    DeviceToDeviceLatencyTMA() : Testcase("device_to_device_latency_tma",
+            "\tMeasures latency of a pointer dereference operation between each pair of accessible peers using TMA.\n"
+            "\tA 2MB buffer is allocated on a PPU and is accessed by the peer PPU using TMA to determine latency.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceLatencyTMA() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override {
+        auto r = Testcase::filterHasAccessiblePeerPairs();
+        if (!r) return r;
+        return Testcase::filterSupportsTMA();
+    }
+};
+
 #ifdef MULTINODE
-// Device to Device CE Read memcpy using hgMemcpyAsync
-class MultinodeDeviceToDeviceReadCE: public Testcase {
+// Multinode device-to-device transfer test (CE/SM/TMA) - Read/Write
+class MultinodeDeviceToDeviceTransfer : public Testcase {
+    CopyInitiator initiator_;
+    AccessType accessType_;
+
  public:
-    MultinodeDeviceToDeviceReadCE() : Testcase("multinode_device_to_device_memcpy_read_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceReadCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
+    MultinodeDeviceToDeviceTransfer(CopyInitiator initiator, AccessType accessType);
+    virtual ~MultinodeDeviceToDeviceTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    ContextPreference getContextPreference() const;
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator, AccessType accessType);
+    static std::string generateDesc(CopyInitiator initiator, AccessType accessType);
+    std::string buildOutputLabel() const;
 };
 
-// Device to Device CE Write memcpy using hgMemcpyAsync
-class MultinodeDeviceToDeviceWriteCE: public Testcase {
- public:
-    MultinodeDeviceToDeviceWriteCE() : Testcase("multinode_device_to_device_memcpy_write_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceWriteCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
-};
+// Multinode device-to-device bidirectional transfer test (CE/SM) - Read/Write
+class MultinodeDeviceToDeviceBidirTransfer : public Testcase {
+    CopyInitiator initiator_;
+    AccessType accessType_;
 
-// Device to Device Bidirectional Read CE memcpy using hgMemcpyAsync
-class MultinodeDeviceToDeviceBidirReadCE: public Testcase {
  public:
-    MultinodeDeviceToDeviceBidirReadCE() : Testcase("multinode_device_to_device_bidirectional_memcpy_read_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tCopies run in both directions concurrently; each direction's bandwidth and their sum are reported.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceBidirReadCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
-};
+    MultinodeDeviceToDeviceBidirTransfer(CopyInitiator initiator, AccessType accessType);
+    virtual ~MultinodeDeviceToDeviceBidirTransfer() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
 
-// Device to Device Bidirectional Write CE memcpy using hgMemcpyAsync
-class MultinodeDeviceToDeviceBidirWriteCE: public Testcase {
- public:
-    MultinodeDeviceToDeviceBidirWriteCE() : Testcase("multinode_device_to_device_bidirectional_memcpy_write_ce",
-            "\tMeasures bandwidth of hgMemcpyAsync between each pair of accessible peers.\n"
-            "\tCopies run in both directions concurrently; each direction's bandwidth and their sum are reported.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceBidirWriteCE() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
-};
-
-// Device to Device SM Read memcpy using a copy kernel
-class MultinodeDeviceToDeviceReadSM: public Testcase {
- public:
-    MultinodeDeviceToDeviceReadSM() : Testcase("multinode_device_to_device_memcpy_read_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceReadSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
-};
-
-// Device to Device SM Write memcpy using a copy kernel
-class MultinodeDeviceToDeviceWriteSM: public Testcase {
- public:
-    MultinodeDeviceToDeviceWriteSM() : Testcase("multinode_device_to_device_memcpy_write_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceWriteSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
-};
-
-// Device to Device bidirectional SM Read memcpy using a copy kernel
-class MultinodeDeviceToDeviceBidirReadSM: public Testcase {
- public:
-    MultinodeDeviceToDeviceBidirReadSM() : Testcase("multinode_device_to_device_bidirectional_memcpy_read_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers. Copies are run\n"
-            "\tin both directions between each pair, and the sum is reported.\n"
-            "\tRead tests launch a copy from the peer device to the target using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceBidirReadSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
-};
-
-// Device to Device bidirectional SM Write memcpy using a copy kernel
-class MultinodeDeviceToDeviceBidirWriteSM: public Testcase {
- public:
-    MultinodeDeviceToDeviceBidirWriteSM() : Testcase("multinode_device_to_device_bidirectional_memcpy_write_sm",
-            "\tMeasures bandwidth of a copy kernel between each pair of accessible peers. Copies are run\n"
-            "\tin both directions between each pair, and the sum is reported.\n"
-            "\tWrite tests launch a copy from the target device to the peer using the target's context.") {}
-    virtual ~MultinodeDeviceToDeviceBidirWriteSM() {}
-    void run(unsigned long long size, unsigned long long loopCount);
-    FilterResult filter() {
-        return Testcase::filterHasMultiplePPUsMultinode();
-    }
+ private:
+    ContextPreference getContextPreference() const;
+    MemcpyInitiator* createMemcpyInitiator() const;
+    static std::string generateKey(CopyInitiator initiator, AccessType accessType);
+    static std::string generateDesc(CopyInitiator initiator, AccessType accessType);
+    std::string buildOutputLabel(const std::string& suffix) const;
 };
 
 class MultinodeAllToOneWriteSM: public Testcase {
@@ -698,6 +674,18 @@ class MultinodeBisectWriteCE: public Testcase {
     virtual ~MultinodeBisectWriteCE() {}
     void run(unsigned long long size, unsigned long long loopCount);
     FilterResult filter() { return Testcase::filterHasMultiplePPUsMultinode(); }
+};
+
+class MultinodeMulticastFabricPut : public Testcase {
+ public:
+    explicit MultinodeMulticastFabricPut(CopyInitiator initiator);
+    virtual ~MultinodeMulticastFabricPut() {}
+    void run(unsigned long long size, unsigned long long loopCount) override;
+    FilterResult filter() override;
+
+ private:
+    CopyInitiator initiator_;
+    std::string buildOutputLabel() const;
 };
 #endif
 

@@ -44,6 +44,7 @@
 
 #include "drv_eit/hggc_eit_pccl.h" // Includes eit table to be queried for umd.
 #include "test_settings.h"
+#include "ppu_common.h"
 
 #define STRING_LENGTH 256
 #define WARP_SIZE 32
@@ -235,6 +236,10 @@ struct LatencyNode {
     struct LatencyNode *next;
 };
 
+struct alignas(16) TMALatencyNode {
+    struct TMALatencyNode *next;
+};
+
 enum UnitType {
     BANDWIDTH,
     LATENCY
@@ -261,5 +266,32 @@ inline bool hugePagesEnabled() {
     }
     return false;
 }
+
+class MemcpyBuffer;
+
+// Describe attributes of a single memcpy operation
+class MemcpyDescriptor {
+ public:
+    const MemcpyBuffer* dstBuffer;
+    const MemcpyBuffer* srcBuffer;
+    HGstream mainstream;
+    HGstream die0stream;
+    HGstream die1stream;
+    size_t copySize;
+    unsigned long long loopCount;
+    HGdeviceptr verificationBuffer = 0;
+    
+    // icn read
+    IcnReadConfig icnReadConfig;
+
+    MemcpyDescriptor(const MemcpyBuffer* dstBuffer,
+                     const MemcpyBuffer* srcBuffer,
+                     HGstream mainstream,
+                     HGstream die0stream,
+                     HGstream die1stream,
+                     size_t copySize,
+                     unsigned long long loopCount,
+                     const IcnReadConfig& icnReadConfig);
+};
 
 #endif  // COMMON_H_

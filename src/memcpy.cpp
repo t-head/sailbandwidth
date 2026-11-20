@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2021-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * Modifications Copyright (c) 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -425,13 +425,14 @@ MemcpyOperation::MemcpyOperation(unsigned long long loopCount, MemcpyInitiator* 
     MemcpyOperation(loopCount, memcpyInitiator, new NodeHelperSingle(), ctxPreference, bandwidthValue) {}
 
 MemcpyOperation::MemcpyOperation(unsigned long long loopCount, MemcpyInitiator* memcpyInitiator, NodeHelper* nodeHelper, ContextPreference ctxPreference, BandwidthValue bandwidthValue) :
-        loopCount(loopCount), memcpyInitiator(memcpyInitiator), nodeHelper(nodeHelper), ctxPreference(ctxPreference), bandwidthValue(bandwidthValue) {
+        ctxPreference(ctxPreference), loopCount(loopCount), memcpyInitiator(memcpyInitiator), nodeHelper(nodeHelper), bandwidthValue(bandwidthValue) {
     procMask = (size_t *)calloc(1, PROC_MASK_SIZE);
     PROC_MASK_SET(procMask, getFirstEnabledCPU());
 }
 
 MemcpyOperation::~MemcpyOperation() {
     PROC_MASK_CLEAR(procMask, 0);
+    free(procMask);
 }
 
 double MemcpyOperation::doMemcpy(const MemcpyBuffer &srcBuffer, const MemcpyBuffer &dstBuffer) {
@@ -1003,15 +1004,39 @@ size_t MemcpyInitiatorSMSplitWarp::memcpyFunc(MemcpyDescriptor &desc, MemcpyDisp
     return copyKernelSplitWarp(desc);
 }
 
+size_t MemcpyInitiatorTMA::memcpyFunc(MemcpyDescriptor &desc, MemcpyDispatchInfo* info) {
+    if (desc.copySize == 0) return 0;
+    return copyKernelTMA(desc);
+}
+
+size_t MemcpyInitiatorTMA::getAdjustedCopySize(size_t srcSize, size_t dstSize, HGstream stream, bool use_bulk) {
+    ASSERT(srcSize == dstSize);
+    return srcSize;
+}
+
+void MemcpyInitiatorTMA::memsetPattern(MemcpyDispatchInfo &info) const {
+    MemcpyInitiatorSM smInitiator;
+    smInitiator.memsetPattern(info);
+}
+
+void MemcpyInitiatorTMA::memcmpPattern(MemcpyDispatchInfo &info) const {
+    MemcpyInitiatorSM smInitiator;
+    smInitiator.memcmpPattern(info);
+}
+
+double MemcpyInitiatorTMA::getAdjustedBandwidth(double bandwidth) {
+    return bandwidth;
+}
+
 MemPtrChaseOperation::MemPtrChaseOperation(unsigned long long loopCount) : loopCount(loopCount) {
     hggcDeviceProp prop;
     HGGC_ASSERT(hggcGetDeviceProperties(&prop, 0));
     smCount = prop.multiProcessorCount;
 }
 
-double MemPtrChaseOperation::doPtrChase(const int srcId, const MemcpyBuffer &peerBuffer) {
+double MemPtrChaseOperation::doPtrChase(const int srcId, const MemcpyBuffer &peerBuffer, PtrChasingKernel kernel) {
     double lat = 0.0;
-    lat = latencyPtrChaseKernel(srcId, (void*)peerBuffer.getBuffer(), peerBuffer.getBufferSize(), latencyMemAccessCnt, smCount);
+    lat = latencyPtrChaseKernel(srcId, (void*)peerBuffer.getBuffer(), peerBuffer.getBufferSize(), latencyMemAccessCnt, smCount, kernel);
     return lat;
 }
 

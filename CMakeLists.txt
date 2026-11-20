@@ -53,8 +53,7 @@ endif()
 
 set(src
     src/testcase.cpp
-    src/testcases_ce.cpp
-    src/testcases_sm.cpp
+    src/testcases.cpp
     src/kernels.cu
     src/memcpy.cpp
     src/verify_utils.cpp

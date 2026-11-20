@@ -41,7 +41,6 @@
 #include <hggc_runtime.h>
 #include <hgml.h>
 
-#include "common.h"
 #include "drv_eit/hggc_eit_pccl.h"
 #include "error_handling.h"
 

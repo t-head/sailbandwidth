@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * Modifications Copyright (c) 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -218,7 +218,11 @@ void Output::addTestcase(const std::string &name, const std::string &status, con
     if (status == SBW_RUNNING) {
         OUTPUT << status << " " << name << ".\n";
     } else {
-        OUTPUT << status << ": " << msg << std::endl;
+        OUTPUT << status << " " << name << ": " << msg;
+        if (msg.empty() || (msg.back() != '.' && msg.back() != '!' && msg.back() != '?')) {
+            OUTPUT << ".";
+        }
+        OUTPUT << "\n";
     }
 }
 
