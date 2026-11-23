@@ -34,7 +34,8 @@ void RecordWarning(const std::stringstream &warnmsg);
 // }
 
 #ifdef MULTINODE
-#define HOST_INFO " on " << (env ? env->getHostname() : "unknown") << ", rank = " << worldRank
+extern std::string errorContext;
+#define HOST_INFO " on " << (env ? env->getHostname() : "unknown") << ", rank = " << worldRank << errorContext
 #else
 #define HOST_INFO ""
 #endif
