@@ -42,10 +42,8 @@ Device-to-device transfers may be unidirectional or bidirectional, and read- or 
   enter the SDK installation directory and run `source envsetup.sh` to configure the build
   environment.
 - CMake 3.20 or above (3.24 or newer recommended).
+- C++17 compiler is required by argparse.
 - Open MPI (multinode builds only).
-
-Command-line parsing uses the header-only [argparse](https://github.com/p-ranav/argparse) library
-(v3.2), which is bundled under `argparse/`.
 
 ## Build
 
@@ -89,7 +87,7 @@ Copy Engine (CE):
 | `one_to_all_write_ce`, `one_to_all_read_ce` | One device transfers with all peers simultaneously; the aggregate bandwidth at that device is reported |
 | `device_local_copy` | Copy between two buffers local to the same device |
 
-Streaming Multiprocessor (SM): the SM counterparts of the CE testcases above, plus the following device-local and latency testcases:
+Streaming Multiprocessor (SM): the SM counterparts of the host–device and peer-to-peer CE testcases above, plus the following device-local and latency testcases:
 
 | Testcase | Description |
 |---|---|
@@ -144,32 +142,34 @@ options; additional advanced options are defined in
 | `-F, --format <format>` | text | Output format: text, json, or perf |
 | `--pair <UUID0> <UUID1>` | – | Select two PPUs by UUID for pairwise device-to-device tests; bind the two ranks in MPI mode |
 
-- The coefficient of variation (CV) describes run-to-run variation; lower values indicate more
-  stable measurements. It is reported only on paths that record it and have enough samples, not
-  for every testcase.
-- `Waived` means a testcase was skipped because its requirements were not met; the reason is
-  included. It is not a test failure.
-- `-F perf` produces machine-readable output containing measurement results and status markers.
-  `PPU<i>/PPU<j>` encode matrix row and column indices; interpret their host, device, or rank
-  meaning according to the testcase.
+To run a specific testcase:
+
+```
+./build/sailbandwidth -t device_to_device_memcpy_write_ce
+```
 
 Example output (`device_to_device_memcpy_write_ce`, bandwidth in GB/s; the diagonal is `N/A`):
 
 ```text
 Running device_to_device_memcpy_write_ce.
 memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)
-          0         1         2         3         4         5         6         7
-0       N/A    384.13    384.14    384.14    384.12    384.12    384.13    384.14
-1    384.13       N/A    384.13    384.16    384.14    384.13    384.13    384.15
-2    384.16    384.14       N/A    384.17    384.15    384.14    384.16    384.16
-3    384.16    384.16    384.16       N/A    384.17    384.15    384.16    384.17
-4    384.13    384.13    384.14    384.15       N/A    384.13    384.14    384.14
-5    384.13    384.14    384.13    384.15    384.13       N/A    384.13    384.16
-6    384.14    384.14    384.13    384.14    384.14    384.13       N/A    384.14
-7    384.15    384.15    384.16    384.16    384.16    384.17    384.17       N/A
+           0         1         2         3         4         5         6         7
+ 0       N/A    384.13    384.16    384.14    384.27    384.27    384.27    384.26
+ 1    384.13       N/A    384.15    384.16    384.26    384.26    384.27    384.26
+ 2    384.15    384.14       N/A    384.14    384.27    384.27    384.27    384.27
+ 3    384.16    384.18    384.17       N/A    384.30    384.29    384.29    384.29
+ 4    384.25    384.26    384.26    384.26       N/A    384.40    384.40    384.40
+ 5    384.23    384.25    384.26    384.25    384.39       N/A    384.39    384.40
+ 6    384.24    384.25    384.27    384.26    384.39    384.40       N/A    384.40
+ 7    384.25    384.25    384.27    384.26    384.39    384.40    384.39       N/A
 
-SUM device_to_device_memcpy_write_ce 21512.06
+SUM device_to_device_memcpy_write_ce 21519.00
+
+COEFFICIENT_OF_VARIATION device_to_device_memcpy_write_ce 0.00
 ```
+
+The coefficient of variation (CV) describes run-to-run variation; lower values indicate more
+stable measurements.
 
 The figures above were measured on a Zhenwu M890 system and are provided for reference only; actual
 results depend on the machine configuration, the link topology and the SAIL SDK version. The `SUM`
@@ -238,49 +238,6 @@ SAILBW_DUMP_PATH=/tmp SAILBW_DUMP_SIZE=ALL SAILBW_VERIFY=0,1 \
     ./build/sailbandwidth -t device_to_device_memcpy_read_sm -v
 ```
 
-## Pairwise PPU Testing
-
-The `--pair` option restricts device-to-device tests to a single, explicitly specified pair of PPUs identified by their UUIDs. This is useful for isolating and measuring a specific link without running the full all-pairs sweep.
-
-### Finding PPU UUIDs
-
-A PPU UUID reported by `ppu-smi -L` has the form `GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. The full UUID is required. For `--pair`, both `GPU-` and `PPU-` prefixes are accepted; the prefix can also be omitted. Matching is case-insensitive.
-
-On a single node, `ppu-smi -L` lists every PPU with its UUID:
-
-```
-$ ppu-smi -L
-PPU 0: ZW-XXX (UUID: GPU-<uuid-0>)
-PPU 1: ZW-XXX (UUID: GPU-<uuid-1>)
-...
-```
-
-### Single-node pairwise test
-
-For a single-process run, `--pair` applies to:
-
-- `device_to_device_memcpy_*`
-- `device_to_device_bidirectional_memcpy_*`
-- `device_to_device_latency_sm`
-
-Pass two different UUIDs visible on the node. Replace the quoted placeholders with actual UUIDs:
-
-```bash
-./build/sailbandwidth -t device_to_device_memcpy_read_sm --pair "GPU-<uuid-0>" "GPU-<uuid-1>"
-```
-
-Only the selected device pair is tested; untested matrix entries are `N/A`. Host-device, collective and device-local testcases are not restricted by this option.
-
-### Multinode pairwise test
-
-Use a multinode build and exactly two MPI ranks, one per PPU. The first UUID selects the PPU for rank 0, and the second selects the PPU for rank 1; each UUID must be visible on that rank's node. Configure the hostfile or job scheduler to place the ranks on the intended nodes.
-
-```bash
-mpirun -np 2 ./build/sailbandwidth -t multinode_device_to_device_memcpy_read_sm --pair "GPU-<uuid-0>" "GPU-<uuid-1>"
-```
-
-Use the `multinode_device_to_device_memcpy_*` and `multinode_device_to_device_bidirectional_memcpy_*` families for MPI pairwise measurements. Matrix indices identify MPI ranks.
-
 ## Multinode benchmarks
 
 Build the multinode version:
@@ -311,35 +268,170 @@ Example output from two Zhenwu M890 nodes with eight PPUs per node (16 MPI proce
 ```text
 Running multinode_device_to_device_memcpy_write_ce.
 memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)
-          0         1         2         3         4         5         6         7         8         9        10        11        12        13        14        15
-0       N/A    384.14    384.16    384.13    384.14    384.14    384.12    384.13    384.14    384.14    384.13    384.14    384.15    384.13    384.15    384.13
-1    384.12       N/A    384.15    384.15    384.14    384.13    384.12    384.14    384.14    384.14    384.13    384.14    384.13    384.14    384.13    384.16
-2    384.12    384.15       N/A    384.12    384.15    384.13    384.12    384.14    384.14    384.12    384.12    384.14    384.14    384.13    384.15    384.13
-3    384.15    384.17    384.15       N/A    384.17    384.16    384.15    384.17    384.17    384.15    384.15    384.16    384.16    384.17    384.15    384.19
-4    384.11    384.13    384.15    384.13       N/A    384.14    384.14    384.16    384.14    384.13    384.14    384.13    384.14    384.13    384.13    384.14
-5    384.11    384.15    384.14    384.14    384.15       N/A    384.15    384.16    384.14    384.14    384.14    384.15    384.14    384.14    384.13    384.15
-6    384.14    384.17    384.16    384.16    384.18    384.17       N/A    384.18    384.15    384.16    384.16    384.17    384.16    384.15    384.16    384.17
-7    384.15    384.17    384.16    384.15    384.18    384.17    384.17       N/A    384.16    384.16    384.16    384.17    384.16    384.14    384.16    384.17
-8    384.12    384.14    384.13    384.12    384.14    384.13    384.12    384.12       N/A    384.13    384.14    384.15    384.12    384.13    384.13    384.13
-9    384.13    384.14    384.14    384.13    384.14    384.13    384.12    384.14    384.14       N/A    384.13    384.15    384.14    384.13    384.13    384.15
-10   384.14    384.16    384.15    384.16    384.16    384.16    384.16    384.16    384.17    384.15       N/A    384.17    384.15    384.15    384.16    384.15
-11   384.14    384.16    384.16    384.16    384.17    384.16    384.15    384.16    384.16    384.18    384.16       N/A    384.15    384.16    384.16    384.17
-12   384.12    384.15    384.17    384.13    384.14    384.14    384.13    384.14    384.15    384.14    384.13    384.15       N/A    384.13    384.14    384.14
-13   384.15    384.18    384.17    384.16    384.17    384.16    384.15    384.17    384.16    384.15    384.16    384.15    384.15       N/A    384.16    384.19
-14   384.15    384.16    384.18    384.15    384.16    384.16    384.15    384.16    384.16    384.17    384.16    384.17    384.18    384.15       N/A    384.16
-15   384.15    384.17    384.15    384.17    384.17    384.16    384.15    384.16    384.16    384.16    384.16    384.17    384.16    384.16    384.16       N/A
+           0         1         2         3         4         5         6         7         8         9        10        11        12        13        14        15
+ 0       N/A    384.14    384.19    384.17    384.29    384.29    384.30    384.29    384.16    384.15    384.16    384.16    384.16    384.14    384.15    384.16
+ 1    384.15       N/A    384.17    384.19    384.29    384.28    384.29    384.28    384.16    384.16    384.15    384.16    384.15    384.15    384.16    384.16
+ 2    384.17    384.16       N/A    384.17    384.29    384.29    384.29    384.28    384.16    384.16    384.16    384.15    384.16    384.14    384.17    384.16
+ 3    384.16    384.16    384.17       N/A    384.29    384.29    384.30    384.28    384.16    384.16    384.16    384.15    384.16    384.14    384.16    384.16
+ 4    384.24    384.25    384.26    384.26       N/A    384.39    384.40    384.39    384.24    384.24    384.25    384.23    384.25    384.24    384.25    384.25
+ 5    384.27    384.28    384.28    384.28    384.42       N/A    384.42    384.42    384.28    384.27    384.28    384.27    384.28    384.26    384.28    384.27
+ 6    384.28    384.27    384.29    384.28    384.43    384.42       N/A    384.42    384.28    384.28    384.28    384.27    384.28    384.26    384.28    384.28
+ 7    384.27    384.28    384.29    384.29    384.42    384.42    384.43       N/A    384.28    384.28    384.27    384.27    384.28    384.26    384.28    384.28
+ 8    384.12    384.12    384.13    384.13    384.26    384.24    384.26    384.25       N/A    384.12    384.14    384.12    384.14    384.11    384.14    384.13
+ 9    384.15    384.16    384.16    384.16    384.29    384.28    384.29    384.27    384.16       N/A    384.16    384.18    384.17    384.16    384.17    384.18
+10    384.13    384.13    384.13    384.13    384.27    384.25    384.27    384.26    384.13    384.12       N/A    384.13    384.14    384.12    384.13    384.13
+11    384.15    384.15    384.16    384.17    384.29    384.27    384.29    384.29    384.15    384.18    384.16       N/A    384.17    384.16    384.16    384.17
+12    384.15    384.15    384.16    384.16    384.29    384.28    384.28    384.28    384.15    384.17    384.16    384.16       N/A    384.16    384.18    384.18
+13    384.14    384.15    384.15    384.15    384.29    384.27    384.29    384.27    384.16    384.16    384.15    384.15    384.16       N/A    384.16    384.19
+14    384.14    384.15    384.16    384.15    384.29    384.28    384.29    384.28    384.16    384.16    384.16    384.16    384.18    384.16       N/A    384.18
+15    384.14    384.15    384.16    384.16    384.29    384.27    384.28    384.28    384.15    384.16    384.16    384.16    384.17    384.17    384.16       N/A
 
-SUM multinode_device_to_device_memcpy_write_ce 92195.71
+SUM multinode_device_to_device_memcpy_write_ce 92211.75
+
+COEFFICIENT_OF_VARIATION multinode_device_to_device_memcpy_write_ce 0.00
 ```
 
 The matrix row and column indices are MPI process ranks; each process controls one PPU. As in the
 single-node example, `SUM` is the sum of the matrix elements, not simultaneous aggregate throughput.
 
+### Pair Sampling for Multinode Tests
+
+For large multinode systems, testing all possible PPU pairs can be time-consuming and resource-intensive. sailbandwidth provides a sampling option to reduce test time while maintaining good coverage of the PPU topology.
+
+Use `-P, --targetNumPairs` to limit the number of rank pairs tested in multinode device-to-device pair tests:
+
+| Value | Behavior |
+|---|---|
+| `-1` (default) | Test all N × (N − 1) directed pairs for N ranks |
+| `0` | Skip all pair transfers |
+| `<N>` | Test N pairs; N must not exceed the total number of pairs |
+
+For example, to run a multinode bandwidth test on a system with 2 nodes and 8 PPUs per node (16 PPUs total), selecting 8 PPU pairs, use the following command:
+
+```
+mpirun -np 16 -npernode 8 --hostfile <path/to/host.cfg> ./build/sailbandwidth -p multinode --targetNumPairs 8
+```
+
+Sampling aims to cover as many PPUs as possible. Untested matrix entries are `N/A`.
+
+**Sampling algorithm**
+
+When `targetNumPairs` is positive and smaller than the total number of pairs, sampling proceeds in two phases:
+
+1. **PPU coverage**: Visit PPUs in shuffled order and select pairs containing uncovered PPUs until all PPUs are covered or the requested pair count is reached.
+2. **Random filling**: Fill any remaining slots with randomly selected pairs that have not already been selected.
+
+Coverage is best-effort, not guaranteed. For example, selecting 8 pairs among 16 PPUs does not necessarily cover every PPU.
+
+**Examples**
+
+```bash
+# Test all pairs (default/full coverage) on a 4-node, 8-PPU/node system (32 ranks)
+mpirun -np 32 -npernode 8 --hostfile <path/to/host.cfg> ./build/sailbandwidth -p multinode --targetNumPairs -1
+
+# Test 20 carefully selected pairs
+mpirun -np 32 -npernode 8 --hostfile <path/to/host.cfg> ./build/sailbandwidth -p multinode --targetNumPairs 20
+
+# For a 4-node, 8-PPU/node system: 992 total pairs available (32×31)
+# Using --targetNumPairs 100 will test ~10% of pairs while covering all PPUs
+```
+
+**Note**: The `--targetNumPairs` parameter only affects multinode device-to-device tests.
+
+## Pairwise PPU Testing
+
+The `--pair` option restricts device-to-device tests to a single, explicitly specified pair of PPUs identified by their UUIDs. This is useful for isolating and measuring a specific link without running the full all-pairs sweep.
+
+### Finding PPU UUIDs
+
+A PPU UUID reported by `ppu-smi -L` has the form `GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`. The full UUID is required. For `--pair`, both `GPU-` and `PPU-` prefixes are accepted; the prefix can also be omitted. Matching is case-insensitive.
+
+On a single node, `ppu-smi -L` lists every PPU with its UUID:
+
+```
+$ ppu-smi -L
+PPU 0: ZW-XXX (UUID: GPU-<uuid-0>)
+PPU 1: ZW-XXX (UUID: GPU-<uuid-1>)
+...
+```
+
+Across multiple nodes, use `mpirun` with your hostfile to query all nodes at once:
+
+```
+# One process per node — lists all visible PPUs on each node (e.g. 2 nodes = -n 2)
+mpirun --hostfile your_host_file.cfg \
+    --map-by ppr:1:node -n 2 \
+    ppu-smi -L
+```
+
+### Single-node pairwise test
+
+For a single-node run, `--pair` applies to:
+
+- `device_to_device_memcpy_*`
+- `device_to_device_bidirectional_memcpy_*`
+- `device_to_device_latency_sm`
+
+Pass both UUIDs directly. The matrix output will show only the row/column entries for those two devices; all other pairs are skipped.
+
+```bash
+./build/sailbandwidth -t device_to_device_memcpy_write_ce --pair <GPU-UUID-0> <GPU-UUID-1>
+```
+
+Example output (`device_to_device_memcpy_write_ce`, bandwidth in GB/s; only entries for the selected device pair contain results,
+and all other entries are `N/A`):
+
+```
+Running device_to_device_memcpy_write_ce.
+memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)
+           0         1         2         3         4         5         6         7
+ 0       N/A    384.12       N/A       N/A       N/A       N/A       N/A       N/A
+ 1    384.13       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+ 2       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+ 3       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+ 4       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+ 5       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+ 6       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+ 7       N/A       N/A       N/A       N/A       N/A       N/A       N/A       N/A
+
+SUM device_to_device_memcpy_write_ce 768.25
+
+COEFFICIENT_OF_VARIATION device_to_device_memcpy_write_ce 0.00
+```
+
+### Multinode pairwise test
+
+For a multi-node run, `--pair` applies to:
+
+- `multinode_device_to_device_memcpy_*`
+- `multinode_device_to_device_bidirectional_memcpy_*`
+
+For multinode tests, run with exactly 2 MPI ranks (one per PPU). Each rank's UUID must be the PPU that rank will use. A hostfile pointing to the two nodes of interest must already be configured for MPI.
+
+```bash
+mpirun -np 2 -npernode 1 --hostfile <path/to/host.cfg> ./build/sailbandwidth -t multinode_device_to_device_memcpy_write_ce \
+    --pair <GPU-UUID-0> <GPU-UUID-1>
+```
+
+Example output (`multinode_device_to_device_memcpy_write_ce`, bandwidth in GB/s; rows and columns represent MPI ranks 0 and 1, each using one selected PPU, and all other entries are `N/A`):
+
+```
+Running multinode_device_to_device_memcpy_write_ce.
+memcpy CE PPU(row) <- PPU(column) bandwidth (GB/s)
+           0         1
+ 0       N/A    384.11
+ 1    384.12       N/A
+
+SUM multinode_device_to_device_memcpy_write_ce 768.24
+
+COEFFICIENT_OF_VARIATION multinode_device_to_device_memcpy_write_ce 0.00
+```
+
 ## Copyright
 
 sailbandwidth is derived from NVIDIA nvbandwidth.
 
-Copyright © 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright © 2022-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 Modifications Copyright © 2025-2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
 
