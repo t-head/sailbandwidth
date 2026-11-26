@@ -48,8 +48,8 @@ def run_step(name, command, env, output, work, timeout):
     print(f"{name}: starting ({timeout}s budget)", flush=True)
     try:
         with stdout.open("xb") as out, stderr.open("xb") as err:
-            process = subprocess.Popen(command, env=env, cwd=work, stdout=out, stderr=err,
-                                       start_new_session=True)
+            process = subprocess.Popen(command, env=env, cwd=work, stdin=subprocess.DEVNULL,
+                                       stdout=out, stderr=err, start_new_session=True)
             try:
                 rc = process.wait(timeout=timeout)
             except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
@@ -62,6 +62,35 @@ def run_step(name, command, env, output, work, timeout):
         raise DiagnosticError(f"{name} exited {rc}; see the retained logs")
     print(f"{name}: exited in {time.monotonic() - started:.1f}s", flush=True)
     return stdout, stderr
+
+
+def probe_worker_launch(hostfile, interface, devices, env, output, work):
+    hosts = [line.split()[0] for line in hostfile.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(hosts) != 2 or len(set(hosts)) != 2 or any(not re.fullmatch(HOST, host) for host in hosts):
+        raise DiagnosticError("Expected two distinct worker names in the scheduler hostfile")
+    # Preserve names and addresses on NAS only. DNS failure is useful evidence even
+    # when cluster-ssh reaches a worker through the scheduler's execution channel.
+    with (output / "00-launch-context.log").open("x", encoding="utf-8") as context:
+        print(f"Master MPI interface: {interface}", file=context)
+        for host in hosts:
+            print(f"Hostfile worker: {host}", file=context)
+            try:
+                dns = subprocess.run(["getent", "ahostsv4", host], stdin=subprocess.DEVNULL,
+                                     capture_output=True, text=True, timeout=5, env=env)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(f"Worker lookup unavailable: {type(error).__name__}", file=context)
+            else:
+                print(f"Worker lookup exit code: {dns.returncode}", file=context)
+                context.write(dns.stdout)
+                context.write(dns.stderr)
+    observed = set()
+    for index, host in enumerate(hosts):
+        stdout, _ = run_step(f"00-cluster-ssh-{index}", ["cluster-ssh", host, "hostname"], env, output, work, 30)
+        reported = stdout.read_text(encoding="utf-8").strip()
+        if reported not in devices or reported in observed:
+            raise DiagnosticError("cluster-ssh did not reach a distinct allocated worker")
+        observed.add(reported)
+    print("Direct cluster-ssh reached both workers", flush=True)
 
 
 def verify_hostname(lines, devices):
@@ -119,7 +148,12 @@ def diagnose(root, group_id, build_sha, hostfile, interface):
             raise DiagnosticError("The verified archive does not contain the MPI probe")
         binary = probe.with_name("sailbandwidth")
         with interrupt_on_term():
-            hostname, _ = run_step("01-hostname", [*small_launch, "hostname"], env, output, work, 30)
+            probe_worker_launch(hostfile, interface, devices, env, output, work)
+            launch_env = {**env, "OMPI_MCA_orte_base_help_aggregate": "0",
+                          "OMPI_MCA_plm_base_verbose": "10", "OMPI_MCA_oob_base_verbose": "10"}
+            hostname_launch = ["mpirun", "--allow-run-as-root", "--hostfile", str(hostfile.resolve()),
+                               "-np", "2", "-npernode", "1", "hostname"]
+            hostname, _ = run_step("01-hostname", hostname_launch, launch_env, output, work, 60)
             verify_hostname(hostname.read_text().splitlines(), devices)
             probe_log, _ = run_step("02-mpi-barrier", [*small_launch, str(probe)], env, output, work, 60)
             uuids = verify_probe(probe_log.read_text().splitlines(), devices)

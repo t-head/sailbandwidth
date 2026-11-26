@@ -36,6 +36,26 @@ mpi_version() {
     dpkg-query -W -f='${Version}\n' openmpi-bin libopenmpi3t64
 }
 
+mpi_interface() {
+    awk '$2 == "00000000" && $1 != "lo" {print $1; exit}' /proc/net/route
+}
+
+record_mpi_runtime() {
+    # Record the worker's runtime using the same resolution order as the master.
+    local PATH="/usr/bin:$PATH" tool executable
+    printf 'Default-route interface: %s\n' "$(mpi_interface)"
+    for tool in cluster-ssh mpirun orted; do
+        if ! executable=$(command -v "$tool"); then
+            printf '%s: not found\n' "$tool"
+            continue
+        fi
+        printf '%s: %s\n' "$tool" "$executable"
+        if [[ $tool != cluster-ssh ]] && ! HWLOC_COMPONENTS=-gl timeout -k 2s 5s "$executable" --version; then
+            printf '%s: version probe failed\n' "$tool"
+        fi
+    done
+}
+
 nas_run() {
     [[ ${SMOKE_KEY:?} =~ ^[0-9]+-[0-9]+$ ]] || fail 'Invalid smoke run key'
     local mount=${SMOKE_NAS_MOUNT:?} subdir=${SMOKE_NAS_SUBDIR:?} base resolved
@@ -86,6 +106,7 @@ case ${1:-} in
             fi
             if [[ ${SMOKE_MPI_DIAGNOSTIC:-0} == 1 ]]; then
                 printf 'Diagnostic host: %s\n' "$(hostname)"
+                record_mpi_runtime
             fi
             ppu-smi -L
         ) > "$root/logs/$group-$rank.log" 2>&1
@@ -98,7 +119,7 @@ case ${1:-} in
         args=()
         if [[ ${SMOKE_NODES:?} == 2 ]]; then
             test -s "${CLUSTER_HOSTS_FILE:?}"
-            iface=$(awk '$2 == "00000000" && $1 != "lo" {print $1; exit}' /proc/net/route)
+            iface=$(mpi_interface)
             [[ -n $iface ]] || fail 'Cannot identify the default-route interface'
             export HWLOC_COMPONENTS=-gl
             args=(--hostfile "$CLUSTER_HOSTS_FILE" --mpi-interface "$iface")

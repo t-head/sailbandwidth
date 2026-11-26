@@ -27,6 +27,14 @@ assert os.environ['OMPI_MCA_plm_rsh_agent'] == 'cluster-ssh'
 assert os.environ['OMPI_MCA_oob_tcp_if_include'] == 'eth0'
 operation = 'multinode_device_to_device_memcpy_write_ce'
 if args[-1] == 'hostname':
+    assert '-x' not in args
+    assert os.environ['OMPI_MCA_orte_base_help_aggregate'] == '0'
+    assert os.environ['OMPI_MCA_plm_base_verbose'] == '10'
+    assert os.environ['OMPI_MCA_oob_base_verbose'] == '10'
+    from pathlib import Path
+    logs = Path(os.environ['DIAGNOSTIC_TEST_LOGS'])
+    assert (logs / '00-cluster-ssh-0.stdout.log').read_text() == 'worker-a\\n'
+    assert (logs / '00-cluster-ssh-1.stdout.log').read_text() == 'worker-b\\n'
     print('worker-a\\nworker-b')
 elif args[-1].endswith('/mpi_probe'):
     assert os.path.isfile(args[-1])
@@ -84,6 +92,22 @@ class MpiDiagnosticsTests(unittest.TestCase):
         self.env = dict(PATH=f'{root / "bin"}:{os.environ["PATH"]}', DIAGNOSTIC_TEST_PYTHON=sys.executable,
                         DIAGNOSTIC_TEST_LAUNCHER=str(root / 'launcher.py'), UUID_A=self.uuids[0], UUID_B=self.uuids[1])
         self.logs = root / 'logs' / f'{self.group}-diagnostics'
+        self.env['DIAGNOSTIC_TEST_LOGS'] = str(self.logs)
+        ssh = root / 'bin' / 'cluster-ssh'
+        ssh.write_text('''#!/bin/sh
+set -eu
+[ "$#" = 2 ] && [ "$2" = hostname ] || exit 64
+if IFS= read -r unexpected; then exit 65; fi
+if [ "${FAILED_WORKER:-}" = "$1" ]; then
+    printf '%s\\n' 'remote command channel unavailable' >&2
+    exit 9
+fi
+printf '%s\\n' "$1"
+''')
+        ssh.chmod(0o755)
+        lookup = root / 'bin' / 'getent'
+        lookup.write_text('#!/bin/sh\nexit 2\n')
+        lookup.chmod(0o755)
 
     def test_runs_through_original_and_separates_stderr(self):
         with patch.dict(os.environ, self.env):
@@ -93,6 +117,25 @@ class MpiDiagnosticsTests(unittest.TestCase):
         self.assertNotIn('mpi-progress', data)
         self.assertIn('mpi-progress', (self.logs / '04-original-16-rank.stderr.log').read_text())
         self.assertFalse(list((self.root / 'scratch').iterdir()))
+        context = (self.logs / '00-launch-context.log').read_text()
+        self.assertIn('Master MPI interface: eth0', context)
+        self.assertIn('Hostfile worker: worker-b', context)
+        self.assertEqual(context.count('Worker lookup exit code: 2'), 2)
+
+    def test_stops_before_mpi_when_direct_worker_command_fails(self):
+        with patch.dict(os.environ, {**self.env, 'FAILED_WORKER': 'worker-b'}):
+            with self.assertRaisesRegex(DiagnosticError, '00-cluster-ssh-1 exited 9'):
+                diagnose(self.root, self.group, self.sha, self.hostfile, 'eth0')
+        self.assertEqual((self.logs / '00-cluster-ssh-0.stdout.log').read_text(), 'worker-a\n')
+        self.assertIn('channel unavailable', (self.logs / '00-cluster-ssh-1.stderr.log').read_text())
+        self.assertFalse((self.logs / '01-hostname.stdout.log').exists())
+
+    def test_rejects_non_hostname_hostfile_target(self):
+        self.hostfile.write_text('worker-a slots=8\n--bad-option slots=8\n')
+        with patch.dict(os.environ, self.env):
+            with self.assertRaisesRegex(DiagnosticError, 'distinct worker names'):
+                diagnose(self.root, self.group, self.sha, self.hostfile, 'eth0')
+        self.assertFalse((self.logs / '00-cluster-ssh-0.stdout.log').exists())
 
     def test_rejects_partial_small_case_and_does_not_run_original(self):
         with patch.dict(os.environ, {**self.env, 'DROP_PAIR': '1'}):

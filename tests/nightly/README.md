@@ -127,7 +127,8 @@ using the scheduler hostfile and the same launcher configuration as smoke:
 
 | Stage | Budget |
 | --- | ---: |
-| One `hostname` process per worker | 30 s |
+| Direct `cluster-ssh <host> hostname`, once for each allocated worker | 30 s per worker |
+| One `hostname` process per worker through `mpirun` | 60 s |
 | One rank per worker: `MPI_Init`, barrier and finalize | 60 s |
 | CE write, one PPU per worker, 16 MiB, one copy iteration, both directions | 90 s |
 | Original 16-rank CE write with unchanged benchmark arguments, all 240 pairs | 600 s |
@@ -136,7 +137,10 @@ The first failure stops the sequence. A local timeout does not prove remote
 ranks exited; the allocation is not reused after a failed stage. No normal Case
 timeout, release workflow, or check-in workflow is changed.
 
-Keep stage stdout and stderr under the run-owned NAS `logs` directory. A scoped
+Keep stage stdout and stderr under the run-owned NAS `logs` directory. Worker
+setup logs record the actual default-route interface and MPI executable paths and
+versions. The master records hostfile names and DNS lookups there; the `mpirun
+hostname` stage captures launcher and control-plane diagnostics on stderr. A scoped
 `SAILBANDWIDTH_MPI_PROGRESS=1` on the diagnostic benchmark ranks flushes MPI
 readiness and pair counts to stderr; it adds no messages to `-F perf` and does
 not log inside the measured copy. Do not use diagnostic measurements for
