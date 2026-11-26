@@ -1,0 +1,220 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: SailBandwidth nightly hardware smoke (experiment)
+
+on:
+  push:
+    branches: [ci/sailbandwidth-nightly]
+    paths:
+      - .github/workflows/sailbandwidth-nightly-smoke.yml
+      - tests/nightly/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sailbandwidth-nightly-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SDK_IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+  SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
+  SMOKE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  build:
+    name: Build single-process and MPI binaries on CPU
+    if: github.repository == 't-head/sailbandwidth'
+    runs-on: x86-ubuntu2404-8-32
+    timeout-minutes: 45
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      archive_sha: ${{ steps.build.outputs.archive_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check smoke contracts and configuration
+        env:
+          CONTROLLER_MOUNT: ${{ vars.SAILBANDWIDTH_NAS_CONTROLLER_MOUNT }}
+          WORKER_MOUNT: ${{ vars.SAILBANDWIDTH_NAS_WORKER_MOUNT }}
+        run: |
+          : "${CONTROLLER_MOUNT:?Set SAILBANDWIDTH_NAS_CONTROLLER_MOUNT}"
+          : "${WORKER_MOUNT:?Set SAILBANDWIDTH_NAS_WORKER_MOUNT}"
+          : "${SMOKE_NAS_SUBDIR:?Set SAILBANDWIDTH_NAS_SUBDIR}"
+          python3 -S -B -m unittest discover -s tests/nightly -v
+      - id: build
+        name: Build and seal one archive
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if docker pull "$SDK_IMAGE"; then
+              break
+            fi
+            test "$attempt" -lt 3 || exit 1
+            sleep 10
+          done
+          image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$SDK_IMAGE")
+          digest=${image##*@sha256:}
+          [[ $image == "${SDK_IMAGE%:*}@sha256:$digest" && $digest =~ ^[0-9a-f]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/sailbandwidth-build-$SMOKE_KEY"
+          revision=$(git rev-parse HEAD)
+          test "$revision" = "$GITHUB_SHA"
+          docker run --rm --entrypoint /bin/bash \
+            -v "$PWD:/workspace/source:ro" \
+            -v "$RUNNER_TEMP/sailbandwidth-build-$SMOKE_KEY:/output" "$image" -euc '
+              source_dir=$(mktemp -d)
+              cp -a /workspace/source/. "$source_dir"
+              cd "$source_dir"
+              bash tests/nightly/smoke_ci.sh build /output
+            '
+          bundle="$RUNNER_TEMP/sailbandwidth-build-$SMOKE_KEY"
+          python3 -S -B tests/nightly/build_cache.py seal \
+            --archive "$bundle/build.tar.gz" --identity "$bundle/build.json" \
+            --revision "$revision" --package ubuntu24-hggcrt13 --sdk "image-$digest"
+          archive_sha=$(sha256sum "$bundle/build.tar.gz" | cut -d ' ' -f 1)
+          printf 'image=%s\narchive_sha=%s\n' "$image" "$archive_sha" >> "$GITHUB_OUTPUT"
+      - name: Upload build for NAS staging
+        uses: actions/upload-artifact@v4
+        with:
+          name: sailbandwidth-smoke-build-${{ env.SMOKE_KEY }}
+          path: ${{ runner.temp }}/sailbandwidth-build-${{ env.SMOKE_KEY }}
+          if-no-files-found: error
+          retention-days: 90
+
+  stage:
+    name: Stage build and generate only the smoke groups
+    needs: build
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 20
+    env:
+      SMOKE_NAS_MOUNT: ${{ vars.SAILBANDWIDTH_NAS_CONTROLLER_MOUNT }}
+      SMOKE_BUILD_SHA: ${{ needs.build.outputs.archive_sha }}
+      SMOKE_IMAGE: ${{ needs.build.outputs.image }}
+    outputs:
+      matrix: ${{ steps.stage.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sailbandwidth-smoke-build-${{ env.SMOKE_KEY }}
+          path: ${{ runner.temp }}/sailbandwidth-download-${{ env.SMOKE_KEY }}
+      - id: stage
+        name: Verify and publish into this run's NAS directory
+        run: |
+          set -eu
+          root=$(bash tests/nightly/smoke_ci.sh nas-run)
+          bundle="$RUNNER_TEMP/sailbandwidth-download-$SMOKE_KEY"
+          python3 -S -B tests/nightly/smoke_ci.py validate-build "$bundle"
+          umask 022
+          mkdir -- "$root" 2>/dev/null || {
+            echo '::error::Cannot create a fresh smoke run directory on NAS; check staging permissions and the run attempt.'
+            exit 1
+          }
+          mkdir -- "$root/cache"
+          install -d -m 1777 "$root/results" "$root/scratch" "$root/logs" "$root/nas-probes"
+          python3 -S -B tests/nightly/smoke_ci.py write-nas-challenge "$root"
+          install -m 644 "$bundle/build.json" "$bundle/openmpi.version" "$root/"
+          python3 -S -B tests/nightly/build_cache.py publish \
+            --archive "$bundle/build.tar.gz" --identity "$root/build.json" \
+            --cache "$root/cache/$SMOKE_BUILD_SHA"
+          python3 -S -B tests/nightly/cases.py --dataset smoke --output "$root/selection" >/dev/null
+          python3 -S -B tests/nightly/smoke_ci.py matrix "$root/selection" >> "$GITHUB_OUTPUT"
+
+  execute:
+    name: Smoke (${{ matrix.id }}, ${{ matrix.case_count }} cases)
+    needs: [build, stage]
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.stage.outputs.matrix) }}
+    env:
+      SMOKE_NAS_MOUNT: ${{ vars.SAILBANDWIDTH_NAS_WORKER_MOUNT }}
+      SMOKE_NODES: ${{ matrix.nodes }}
+      SMOKE_GROUP: ${{ matrix.id }}
+      SMOKE_BUILD_SHA: ${{ needs.build.outputs.archive_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Allocate PPUs and run the group
+        uses: t-head/ci-infra/cluster-run@main
+        with:
+          image: ${{ needs.build.outputs.image }}
+          nnodes: ${{ matrix.nodes == 1 && '0' || '2' }}
+          nproc_per_node: ${{ matrix.cards_per_node }}
+          node_selector: ${{ matrix.node_selector }}
+          rack_policy: ${{ matrix.rack_policy }}
+          launch_mode: ${{ matrix.nodes == 2 && 'master' || 'each-node' }}
+          namespace: ppu-sched
+          timeout_minutes: 90
+          host_volumes: /dev/infiniband:/dev/infiniband
+          container_options: |
+            privileged: true
+            host_network: true
+            dns_policy: ClusterFirstWithHostNet
+          setup_command: |
+            bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" setup
+          command: |
+            bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" run
+
+  report:
+    name: Reconcile smoke and write per-platform Excel reports
+    needs: [build, stage, execute]
+    if: ${{ !cancelled() && needs.stage.result == 'success' }}
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 15
+    env:
+      SMOKE_NAS_MOUNT: ${{ vars.SAILBANDWIDTH_NAS_CONTROLLER_MOUNT }}
+      SMOKE_BUILD_SHA: ${{ needs.build.outputs.archive_sha }}
+      SMOKE_IMAGE: ${{ needs.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install report-only dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sailbandwidth-report-venv"
+          "$RUNNER_TEMP/sailbandwidth-report-venv/bin/python" -m pip --isolated install \
+            --index-url https://pypi.org/simple --retries 3 XlsxWriter==3.2.9
+      - id: report
+        name: Retain detailed reports on NAS and publish only status totals
+        env:
+          EXECUTION_RESULT: ${{ needs.execute.result }}
+        run: |
+          set -eu
+          root=$(bash tests/nightly/smoke_ci.sh nas-run)
+          python3 -S -B tests/nightly/smoke_ci.py validate-build "$root" --identity-only
+          nas_rc=0
+          python3 -S -B tests/nightly/smoke_ci.py verify-nas-probes "$root" \
+            > "$root/logs/nas-probes.log" 2>&1 || nas_rc=$?
+          if [ "$nas_rc" != 0 ]; then
+            echo '::error::NAS read/write probes did not complete for every smoke worker; see the retained NAS diagnostics.'
+          fi
+          rc=0
+          "$RUNNER_TEMP/sailbandwidth-report-venv/bin/python" -B tests/nightly/report.py \
+            --selection "$root/selection" --results "$root/results" --identity "$root/build.json" \
+            --output "$root/reports" --excel > "$root/logs/reconciliation.log" 2>&1 || rc=$?
+          if [ -f "$root/reports/summary.json" ]; then
+            python3 -S -B tests/nightly/smoke_ci.py public-summary "$root/reports/summary.json" \
+              > "$RUNNER_TEMP/sailbandwidth-smoke-summary-$SMOKE_KEY.json"
+            cat "$RUNNER_TEMP/sailbandwidth-smoke-summary-$SMOKE_KEY.json"
+          fi
+          test "$nas_rc" = 0 && test "$rc" = 0 && test "$EXECUTION_RESULT" = success
+      - name: Upload non-sensitive status totals
+        if: ${{ !cancelled() && steps.report.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sailbandwidth-smoke-summary-${{ env.SMOKE_KEY }}
+          path: ${{ runner.temp }}/sailbandwidth-smoke-summary-${{ env.SMOKE_KEY }}.json
+          if-no-files-found: ignore
+          retention-days: 90
