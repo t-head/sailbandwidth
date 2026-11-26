@@ -22,6 +22,16 @@ ls
 ./sailbandwidth/build/sailbandwidth -t device_to_device_memcpy_write_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t device_to_device_bidirectional_memcpy_read_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t device_to_device_bidirectional_memcpy_write_sm -i 1
+./sailbandwidth/build/sailbandwidth -t all_to_one_read_ce -i 1
+./sailbandwidth/build/sailbandwidth -t all_to_one_read_ce -i 1 --enableSplitSizeReadOptimize false
+./sailbandwidth/build/sailbandwidth -t all_to_one_write_ce -i 1
+./sailbandwidth/build/sailbandwidth -t all_to_one_read_sm -i 1
+./sailbandwidth/build/sailbandwidth -t all_to_one_write_sm -i 1
+./sailbandwidth/build/sailbandwidth -t one_to_all_read_ce -i 1
+./sailbandwidth/build/sailbandwidth -t one_to_all_read_ce -i 1 --enableSplitSizeReadOptimize false
+./sailbandwidth/build/sailbandwidth -t one_to_all_write_ce -i 1
+./sailbandwidth/build/sailbandwidth -t one_to_all_read_sm -i 1
+./sailbandwidth/build/sailbandwidth -t one_to_all_write_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t device_to_host_bidirectional_memcpy_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t host_to_device_bidirectional_memcpy_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t all_to_host_bidirectional_memcpy_sm -i 1
@@ -31,5 +41,9 @@ ls
 ./sailbandwidth/build/sailbandwidth -t host_to_device_memcpy_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t device_to_host_memcpy_sm -i 1
 ./sailbandwidth/build/sailbandwidth -t host_device_latency_sm -i 1
+./sailbandwidth/build/sailbandwidth -t device_local_copy -i 1
+./sailbandwidth/build/sailbandwidth -t device_local_copy_sm -i 1
+./sailbandwidth/build/sailbandwidth -t device_local_read_sm -i 1
+./sailbandwidth/build/sailbandwidth -t device_local_write_sm -i 1
 
 echo "######################### $(date +%Y%m%d%H%M%S) sailbandwidth test finish ##########################"
