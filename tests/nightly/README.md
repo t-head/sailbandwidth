@@ -134,11 +134,11 @@ and ordinary smoke do not install HPN. This experiment still uses the same
 Ubuntu Open MPI package on the CPU build and the workers.
 
 After both workers' NAS responses are verified, the master runs these stages
-using the scheduler hostfile and the same launcher configuration as smoke:
+using the scheduler hostfile and the smoke launcher, with one diagnostic override:
 
 | Stage | Budget |
 | --- | ---: |
-| Direct `cluster-ssh <host> hostname`, once for each allocated worker | 30 s per worker |
+| Direct `cluster-ssh` hostname and runtime lookup, once per allocated worker | 30 s per worker |
 | One `hostname` process per worker through `mpirun` | 60 s |
 | One rank per worker: `MPI_Init`, barrier and finalize | 60 s |
 | CE write, one PPU per worker, 16 MiB, one copy iteration, both directions | 90 s |
@@ -149,9 +149,14 @@ ranks exited; the allocation is not reused after a failed stage. No normal Case
 timeout, release workflow, or check-in workflow is changed.
 
 Keep stage stdout and stderr under the run-owned NAS `logs` directory. Worker
-setup logs record the actual default-route interface and MPI executable paths and
-versions. The master records hostfile names and DNS lookups there; the `mpirun
-hostname` stage captures launcher and control-plane diagnostics on stderr. A scoped
+setup logs record the default-route interface and MPI resolution both before and
+after prepending `/usr/bin`. The direct SSH probe records the remote session's
+hwloc setting, MPI executable paths and version. Open MPI 4 starts remote daemons
+as `env HWLOC_COMPONENTS=-gl orted` for this diagnosis, so the GL plugin is
+excluded before daemon initialization even if the SSH session did not inherit
+the master environment. The MPI package, scheduler configuration, and hostname
+compression are unchanged. The master records hostfile names and DNS lookups on
+NAS; `mpirun hostname` captures launcher and control-plane details on stderr. A scoped
 `SAILBANDWIDTH_MPI_PROGRESS=1` on the diagnostic benchmark ranks flushes MPI
 readiness and pair counts to stderr; it adds no messages to `-F perf` and does
 not log inside the measured copy. Do not use diagnostic measurements for

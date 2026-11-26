@@ -20,6 +20,13 @@ from smoke_ci import smoke_matrix, verify_nas_probes
 
 OPERATION = "multinode_device_to_device_memcpy_write_ce"
 PROGRESS = "SAILBANDWIDTH_MPI_PROGRESS"
+REMOTE_DAEMON = "env HWLOC_COMPONENTS=-gl orted"
+WORKER_PROBE = (
+    'hostname || exit; '
+    'printf "SSH worker HWLOC_COMPONENTS=%s\\n" "${HWLOC_COMPONENTS-<unset>}" >&2; '
+    'command -v mpirun orted >&2 || :; '
+    'HWLOC_COMPONENTS=-gl timeout -k 1s 5s mpirun --version >&2 || :'
+)
 HOST = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
 RANK_LINE = re.compile(rf"probe rank=([01]) host=({HOST})")
 UUID = r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
@@ -85,7 +92,7 @@ def probe_worker_launch(hostfile, interface, devices, env, output, work):
                 context.write(dns.stderr)
     observed = set()
     for index, host in enumerate(hosts):
-        stdout, _ = run_step(f"00-cluster-ssh-{index}", ["cluster-ssh", host, "hostname"], env, output, work, 30)
+        stdout, _ = run_step(f"00-cluster-ssh-{index}", ["cluster-ssh", host, WORKER_PROBE], env, output, work, 30)
         reported = stdout.read_text(encoding="utf-8").strip()
         if reported not in devices or reported in observed:
             raise DiagnosticError("cluster-ssh did not reach a distinct allocated worker")
@@ -136,7 +143,9 @@ def diagnose(root, group_id, build_sha, hostfile, interface):
     devices = setup_devices(root / "logs", group_id)
     output = root / "logs" / f"{group_id}-diagnostics"
     output.mkdir()
-    env = {**os.environ, **shared_env, PROGRESS: "1"}
+    # A master-side export (or mpirun -x) does not set hwloc's environment
+    # before the remote orted starts. Prefix the daemon only for this experiment.
+    env = {**os.environ, **shared_env, PROGRESS: "1", "OMPI_MCA_orte_launch_agent": REMOTE_DAEMON}
     small_launch = mpi_launch({**group, "cards_per_node": 1}, hostfile, interface, env)
     full_launch = mpi_launch(group, hostfile, interface, env)
     with tempfile.TemporaryDirectory(prefix="mpi-diagnostic-", dir=root / "scratch") as work:

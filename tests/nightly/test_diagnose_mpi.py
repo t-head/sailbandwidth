@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from build_cache import ARCHIVE, BINARIES, MPI_PROBE, digest, publish
 from cases import generate, write_json
-from diagnose_mpi import DiagnosticError, OPERATION, diagnose, run_step, setup_devices
+from diagnose_mpi import DiagnosticError, OPERATION, WORKER_PROBE, diagnose, run_step, setup_devices
 from smoke_ci import record_nas_probe, smoke_matrix, write_nas_challenge
 
 
@@ -25,6 +25,7 @@ ranks = int(args[args.index('-np') + 1])
 assert args[args.index('-npernode') + 1] == str(ranks // 2)
 assert os.environ['OMPI_MCA_plm_rsh_agent'] == 'cluster-ssh'
 assert os.environ['OMPI_MCA_oob_tcp_if_include'] == 'eth0'
+assert os.environ['OMPI_MCA_orte_launch_agent'] == 'env HWLOC_COMPONENTS=-gl orted'
 operation = 'multinode_device_to_device_memcpy_write_ce'
 if args[-1] == 'hostname':
     assert '-x' not in args
@@ -90,19 +91,21 @@ class MpiDiagnosticsTests(unittest.TestCase):
         launcher.chmod(0o755)
         (root / 'launcher.py').write_text(MOCK_LAUNCHER)
         self.env = dict(PATH=f'{root / "bin"}:{os.environ["PATH"]}', DIAGNOSTIC_TEST_PYTHON=sys.executable,
-                        DIAGNOSTIC_TEST_LAUNCHER=str(root / 'launcher.py'), UUID_A=self.uuids[0], UUID_B=self.uuids[1])
+                        DIAGNOSTIC_TEST_LAUNCHER=str(root / 'launcher.py'), DIAGNOSTIC_WORKER_PROBE=WORKER_PROBE,
+                        UUID_A=self.uuids[0], UUID_B=self.uuids[1])
         self.logs = root / 'logs' / f'{self.group}-diagnostics'
         self.env['DIAGNOSTIC_TEST_LOGS'] = str(self.logs)
         ssh = root / 'bin' / 'cluster-ssh'
         ssh.write_text('''#!/bin/sh
 set -eu
-[ "$#" = 2 ] && [ "$2" = hostname ] || exit 64
+[ "$#" = 2 ] && [ "$2" = "$DIAGNOSTIC_WORKER_PROBE" ] || exit 64
 if IFS= read -r unexpected; then exit 65; fi
 if [ "${FAILED_WORKER:-}" = "$1" ]; then
     printf '%s\\n' 'remote command channel unavailable' >&2
     exit 9
 fi
 printf '%s\\n' "$1"
+printf '%s\\n' 'SSH worker HWLOC_COMPONENTS=<unset>' '/usr/bin/mpirun' >&2
 ''')
         ssh.chmod(0o755)
         lookup = root / 'bin' / 'getent'
@@ -121,6 +124,8 @@ printf '%s\\n' "$1"
         self.assertIn('Master MPI interface: eth0', context)
         self.assertIn('Hostfile worker: worker-b', context)
         self.assertEqual(context.count('Worker lookup exit code: 2'), 2)
+        self.assertIn('SSH worker HWLOC_COMPONENTS=<unset>',
+                      (self.logs / '00-cluster-ssh-1.stderr.log').read_text())
 
     def test_stops_before_mpi_when_direct_worker_command_fails(self):
         with patch.dict(os.environ, {**self.env, 'FAILED_WORKER': 'worker-b'}):

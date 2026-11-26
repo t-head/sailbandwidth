@@ -41,7 +41,9 @@ mpi_interface() {
 }
 
 record_mpi_runtime() {
-    # Record the worker's runtime using the same resolution order as the master.
+    # Compare the image's SDK-initialized PATH with the diagnostic master's PATH.
+    printf 'Default PATH mpirun: %s\n' "$(command -v mpirun || true)"
+    printf 'Default PATH orted: %s\n' "$(command -v orted || true)"
     local PATH="/usr/bin:$PATH" tool executable
     printf 'Default-route interface: %s\n' "$(mpi_interface)"
     for tool in cluster-ssh mpirun orted; do
@@ -50,7 +52,7 @@ record_mpi_runtime() {
             continue
         fi
         printf '%s: %s\n' "$tool" "$executable"
-        if [[ $tool != cluster-ssh ]] && ! HWLOC_COMPONENTS=-gl timeout -k 2s 5s "$executable" --version; then
+        if [[ $tool == mpirun ]] && ! HWLOC_COMPONENTS=-gl timeout -k 2s 5s "$executable" --version; then
             printf '%s: version probe failed\n' "$tool"
         fi
     done
