@@ -59,15 +59,24 @@ class SelectionTests(unittest.TestCase):
                 manifest = cases.generate(cases.ROOT / "families.json", root, dataset)
                 self.assertEqual([group["case_count"] for group in manifest["groups"]], expected)
                 identities = set()
+                longer_budgets = []
                 for group in manifest["groups"]:
                     _, env, selected = cases.load_group(root / group["id"])
                     self.assertEqual(env["ALIPPU_RESET_CE_MASK"], "1")
                     self.assertEqual(group["rack_policy"], "same" if group["nodes"] == 2 else "")
                     for case in selected:
-                        self.assertEqual(case.timeout, 300)
+                        if case.timeout != 300:
+                            longer_budgets.append((case.family, case.name, case.timeout))
                         self.assertNotIn((case.family, case.name), identities)
                         identities.add((case.family, case.name))
                 self.assertEqual(len(identities), sum(expected))
+                self.assertEqual(longer_budgets, [
+                    ("810e-performance", "test_op_device_to_device_latency_sm_i_1", 1200),
+                ])
+
+    def test_eic_execution_budget_does_not_reduce_source_timeout(self):
+        case = cases.make_case("810e-performance", "latency", 1500, ["-t", LATENCY])
+        self.assertIs(cases.execution_budget(case), case)
 
     def test_reject_foreign_arguments_and_incorrect_mode(self):
         for args in (["-t", OP, "--skipVerification"], ["-t", "echo;shutdown"], ["-t"],

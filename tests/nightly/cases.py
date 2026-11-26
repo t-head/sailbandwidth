@@ -4,7 +4,7 @@
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import re
@@ -107,6 +107,15 @@ def make_case(family, name, timeout, arguments):
     return Case(family, name, timeout, arguments)
 
 
+def execution_budget(case):
+    # The adapted 16-PPU EIC case sweeps up to 240 ordered pairs serially.
+    # Keep the snapshot unchanged and budget the same benchmark arguments.
+    if (case.family == "810e-performance" and
+            validate_arguments(case.arguments) == "device_to_device_latency_sm" and case.timeout < 1200):
+        return replace(case, timeout=1200)
+    return case
+
+
 def validate_env(env):
     if not isinstance(env, dict) or set(env) != ENV_KEYS or any(
             not isinstance(value, str) or not NAME.fullmatch(value) for value in env.values()):
@@ -154,7 +163,7 @@ def generate(source, output, dataset):
         families.add(ident)
         env = validate_env(family["env"])
         group = staged.setdefault((*key, tuple(sorted(env.items()))), [])
-        group.extend(make_case(ident, name, family["timeout_seconds"], args)
+        group.extend(execution_budget(make_case(ident, name, family["timeout_seconds"], args))
                      for name, args in sorted(family["cases"].items()))
     if families != set(FAMILIES):
         raise ValueError("Incomplete family coverage")
