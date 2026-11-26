@@ -1,0 +1,673 @@
+{
+  "format_version": 1,
+  "source_revision": "c4c04400271222fe36ea95b49dbd30918711ee08",
+  "families": [
+    {
+      "id": "m890p-functional",
+      "platform": "m890p-cx8",
+      "nodes": 1,
+      "cards_per_node": 8,
+      "timeout_seconds": 300,
+      "env": {
+        "ALIPPU_RESET_CE_MASK": "1",
+        "NCCL_DEBUG": "INFO",
+        "UMD_PLATFORM_TYPE": "1"
+      },
+      "cases": {
+        "test_op_sailbandwidth_singlelink_linkid_1": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "--useSingleLinkForIcnRead",
+          "--linkId",
+          "1"
+        ],
+        "test_op_sailbandwidth_singlelink_linkid_7": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "--useSingleLinkForIcnRead",
+          "--linkId",
+          "7"
+        ],
+        "test_op_sailbandwidth_singlelink_vpipe_die0_1": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "--useSingleLinkForIcnRead",
+          "--vpipeIdForDie0",
+          "1"
+        ],
+        "test_op_sailbandwidth_singlelink_vpipe_die1_1": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "--useSingleLinkForIcnRead",
+          "--vpipeIdForDie1",
+          "1"
+        ],
+        "test_op_sailbandwidth_vpipeid": [
+          "--enableVpipeIdReadOptimize"
+        ]
+      }
+    },
+    {
+      "id": "m890p-performance",
+      "platform": "m890p-cx8",
+      "nodes": 1,
+      "cards_per_node": 8,
+      "timeout_seconds": 300,
+      "env": {
+        "ALIPPU_RESET_CE_MASK": "1",
+        "NCCL_DEBUG": "INFO",
+        "UMD_PLATFORM_TYPE": "1"
+      },
+      "cases": {
+        "test_op_all_to_host_bidirectional_memcpy_ce_s_true_i_1": [
+          "-t",
+          "all_to_host_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_host_bidirectional_memcpy_sm_s_true_i_1": [
+          "-t",
+          "all_to_host_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_host_memcpy_ce_s_true_i_1": [
+          "-t",
+          "all_to_host_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_host_memcpy_sm_s_true_i_1": [
+          "-t",
+          "all_to_host_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_read_ce_s_true_i_1": [
+          "-t",
+          "all_to_one_read_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_read_ce_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "all_to_one_read_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_read_sm_s_true_i_1": [
+          "-t",
+          "all_to_one_read_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_read_sm_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "all_to_one_read_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_write_ce_s_true_i_1": [
+          "-t",
+          "all_to_one_write_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_write_ce_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "all_to_one_write_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_write_sm_s_true_i_1": [
+          "-t",
+          "all_to_one_write_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_write_sm_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "all_to_one_write_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_device_local_copy_s_true_i_1": [
+          "-t",
+          "device_local_copy",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_read_ce_s_true_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_read_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_read_sm_s_true_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_write_ce_s_true_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_write_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_write_sm_s_true_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_latency_sm_s_true_i_1": [
+          "-t",
+          "device_to_device_latency_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_read_ce_s_true_i_1": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_read_sm_s_true_i_1": [
+          "-t",
+          "device_to_device_memcpy_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_write_ce_s_true_i_1": [
+          "-t",
+          "device_to_device_memcpy_write_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_write_sm_s_true_i_1": [
+          "-t",
+          "device_to_device_memcpy_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_host_bidirectional_memcpy_ce_s_true_i_1": [
+          "-t",
+          "device_to_host_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_host_bidirectional_memcpy_sm_s_true_i_1": [
+          "-t",
+          "device_to_host_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_host_memcpy_ce_s_true_i_1": [
+          "-t",
+          "device_to_host_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_host_memcpy_sm_s_true_i_1": [
+          "-t",
+          "device_to_host_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_device_latency_sm_s_true_i_1": [
+          "-t",
+          "host_device_latency_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_bidirectional_memcpy_ce_s_true_i_1": [
+          "-t",
+          "host_to_all_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_bidirectional_memcpy_sm_s_true_i_1": [
+          "-t",
+          "host_to_all_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_memcpy_ce_s_true_i_1": [
+          "-t",
+          "host_to_all_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_memcpy_sm_s_true_i_1": [
+          "-t",
+          "host_to_all_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_bidirectional_memcpy_ce_s_true_i_1": [
+          "-t",
+          "host_to_device_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_bidirectional_memcpy_sm_s_true_i_1": [
+          "-t",
+          "host_to_device_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_memcpy_ce_s_true_i_1": [
+          "-t",
+          "host_to_device_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_memcpy_sm_s_true_i_1": [
+          "-t",
+          "host_to_device_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_read_ce_s_true_i_1": [
+          "-t",
+          "one_to_all_read_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_read_ce_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "one_to_all_read_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_read_sm_s_true_i_1": [
+          "-t",
+          "one_to_all_read_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_read_sm_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "one_to_all_read_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_write_ce_s_true_i_1": [
+          "-t",
+          "one_to_all_write_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_write_ce_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "one_to_all_write_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_write_sm_s_true_i_1": [
+          "-t",
+          "one_to_all_write_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_write_sm_s_true_i_1_enablesplit": [
+          "--enableSplitSizeReadOptimize",
+          "-t",
+          "one_to_all_write_sm",
+          "-i",
+          "1"
+        ]
+      }
+    },
+    {
+      "id": "m890p-mpi",
+      "platform": "m890p-cx8",
+      "nodes": 2,
+      "cards_per_node": 8,
+      "timeout_seconds": 300,
+      "env": {
+        "ALIPPU_RESET_CE_MASK": "1",
+        "NCCL_DEBUG": "INFO",
+        "UMD_PLATFORM_TYPE": "1"
+      },
+      "cases": {
+        "test_sailbandwidth_perf_device_to_device_all_from_one_read_sm_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_all_from_one_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_all_to_one_write_sm_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_all_to_one_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_bidirectional_memcpy_read_ce_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_bidirectional_memcpy_read_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_bidirectional_memcpy_read_sm_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_bidirectional_memcpy_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_bidirectional_memcpy_write_ce_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_bidirectional_memcpy_write_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_bidirectional_memcpy_write_sm_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_bidirectional_memcpy_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_memcpy_read_ce_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_memcpy_read_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_memcpy_read_sm_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_memcpy_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_memcpy_write_ce_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_memcpy_write_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_sailbandwidth_perf_device_to_device_memcpy_write_sm_ranks_16_nnodes2": [
+          "-t",
+          "multinode_device_to_device_memcpy_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ]
+      }
+    },
+    {
+      "id": "810e-performance",
+      "platform": "810e-eic",
+      "nodes": 1,
+      "cards_per_node": 16,
+      "timeout_seconds": 300,
+      "env": {
+        "ALIPPU_RESET_CE_MASK": "1",
+        "NCCL_DEBUG": "INFO",
+        "UMD_PLATFORM_TYPE": "1"
+      },
+      "cases": {
+        "test_op_all_to_host_bidirectional_memcpy_ce_i_1": [
+          "-t",
+          "all_to_host_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_host_bidirectional_memcpy_sm_i_1": [
+          "-t",
+          "all_to_host_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_host_memcpy_ce_i_1": [
+          "-t",
+          "all_to_host_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_host_memcpy_sm_i_1": [
+          "-t",
+          "all_to_host_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_read_ce_i_1": [
+          "-t",
+          "all_to_one_read_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_read_sm_i_1": [
+          "-t",
+          "all_to_one_read_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_write_ce_i_1": [
+          "-t",
+          "all_to_one_write_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_all_to_one_write_sm_i_1": [
+          "-t",
+          "all_to_one_write_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_device_local_copy_i_1": [
+          "-t",
+          "device_local_copy",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_read_ce_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_read_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_read_ce_i_1_disableVm": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_read_ce",
+          "-i",
+          "1",
+          "--disableVm",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_read_sm_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_write_ce_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_write_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_bidirectional_memcpy_write_sm_i_1": [
+          "-t",
+          "device_to_device_bidirectional_memcpy_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_latency_sm_i_1": [
+          "-t",
+          "device_to_device_latency_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_read_ce_i_1": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_read_ce_i_1_disableVm": [
+          "-t",
+          "device_to_device_memcpy_read_ce",
+          "-i",
+          "1",
+          "--disableVm",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_read_sm_i_1": [
+          "-t",
+          "device_to_device_memcpy_read_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_write_ce_i_1": [
+          "-t",
+          "device_to_device_memcpy_write_ce",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_device_memcpy_write_sm_i_1": [
+          "-t",
+          "device_to_device_memcpy_write_sm",
+          "-i",
+          "1",
+          "--displayUR"
+        ],
+        "test_op_device_to_host_bidirectional_memcpy_ce_i_1": [
+          "-t",
+          "device_to_host_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_host_bidirectional_memcpy_sm_i_1": [
+          "-t",
+          "device_to_host_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_host_memcpy_ce_i_1": [
+          "-t",
+          "device_to_host_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_device_to_host_memcpy_sm_i_1": [
+          "-t",
+          "device_to_host_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_device_latency_sm_i_1": [
+          "-t",
+          "host_device_latency_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_bidirectional_memcpy_ce_i_1": [
+          "-t",
+          "host_to_all_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_bidirectional_memcpy_sm_i_1": [
+          "-t",
+          "host_to_all_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_memcpy_ce_i_1": [
+          "-t",
+          "host_to_all_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_all_memcpy_sm_i_1": [
+          "-t",
+          "host_to_all_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_bidirectional_memcpy_ce_i_1": [
+          "-t",
+          "host_to_device_bidirectional_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_bidirectional_memcpy_sm_i_1": [
+          "-t",
+          "host_to_device_bidirectional_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_memcpy_ce_i_1": [
+          "-t",
+          "host_to_device_memcpy_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_host_to_device_memcpy_sm_i_1": [
+          "-t",
+          "host_to_device_memcpy_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_read_ce_i_1": [
+          "-t",
+          "one_to_all_read_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_read_sm_i_1": [
+          "-t",
+          "one_to_all_read_sm",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_write_ce_i_1": [
+          "-t",
+          "one_to_all_write_ce",
+          "-i",
+          "1"
+        ],
+        "test_op_one_to_all_write_sm_i_1": [
+          "-t",
+          "one_to_all_write_sm",
+          "-i",
+          "1"
+        ]
+      }
+    }
+  ]
+}
