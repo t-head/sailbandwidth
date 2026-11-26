@@ -122,6 +122,17 @@ allocation nor the usual 11-Case reconciliation runs. Use `'0'` to restore the
 normal smoke workflow. The build includes a small MPI probe in the same
 SHA-256-verified archive as the benchmark only in diagnostic mode.
 
+Before the MPI probe, `setup_command` runs the PCCL-derived HPN installer on
+both diagnostic workers. Its default URL selects the same HPN SDK 2.1.3 build
+as the successful PCCL control. `HPN_SDK_URL` can override it in the worker
+setup environment; an explicitly empty value keeps the image's SDK. A nonempty
+URL must point to a public HTTPS `.bin` on `zone-ci.oss-cn-hangzhou.aliyuncs.com`
+and cannot include credentials, a query, or a fragment. Redirects are rejected.
+Downloads have bounded retries, and a failed download or install stops setup.
+Installer output stays in the run-owned worker setup log on NAS. The CPU build
+and ordinary smoke do not install HPN. This experiment still uses the same
+Ubuntu Open MPI package on the CPU build and the workers.
+
 After both workers' NAS responses are verified, the master runs these stages
 using the scheduler hostfile and the same launcher configuration as smoke:
 
