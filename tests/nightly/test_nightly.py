@@ -182,10 +182,18 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(command[:8], ["mpirun", "--allow-run-as-root", "-np", "16", "-npernode", "8",
                                           "--hostfile", str(hostfile.resolve())])
             self.assertEqual(env["OMPI_MCA_plm_rsh_agent"], "cluster-ssh")
+            self.assertEqual(env["HWLOC_COMPONENTS"], "-gl")
+            self.assertEqual(env["OMPI_MCA_orte_launch_agent"], "env HWLOC_COMPONENTS=-gl orted")
             self.assertEqual(env["OMPI_MCA_btl_tcp_if_include"], "eth0")
             hostfile.write_text("worker-0 slots=8\nworker-0 slots=8\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unique"):
                 run_cases.mpi_launch(group, hostfile, "eth0", env)
+
+    def test_single_node_leaves_mpi_environment_unchanged(self):
+        env = {"PATH": "/usr/bin"}
+        group = {"nodes": 1, "cards_per_node": 8}
+        self.assertEqual(run_cases.mpi_launch(group, None, None, env), [])
+        self.assertEqual(env, {"PATH": "/usr/bin"})
 
     def test_real_subprocess_timeout(self):
         case = cases.make_case("m890p-performance", "timeout", 1, ["-t", OP])

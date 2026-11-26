@@ -19,8 +19,8 @@ concurrency:
 env:
   SDK_IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
   SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
-  # Temporary mode for one diagnostic push; set to 0 to restore the regular smoke matrix.
-  SMOKE_MPI_DIAGNOSTIC: '1'
+  # Diagnostic mode (1) selects only the two-worker MPI group.
+  SMOKE_MPI_DIAGNOSTIC: '0'
   SMOKE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:

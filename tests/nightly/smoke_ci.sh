@@ -102,11 +102,9 @@ case ${1:-} in
             sdk_env
             ulimit -l unlimited
             if [[ ${SMOKE_NODES:?} == 2 ]]; then
-                if [[ ${SMOKE_MPI_DIAGNOSTIC:-0} == 1 ]]; then
-                    # Match the successful PCCL run by default; an empty override keeps the image SDK.
-                    default_hpn_url=https://zone-ci.oss-cn-hangzhou.aliyuncs.com/hpn-sdk/2.1.3/hpnsdk2.1.3-ubuntu2404-202611121836-x86_64.bin
-                    HPN_SDK_URL="${HPN_SDK_URL-$default_hpn_url}" bash "$scripts/install_hpn_sdk.sh"
-                fi
+                # Use the validated MPI runtime; an empty override keeps the image SDK.
+                default_hpn_url=https://zone-ci.oss-cn-hangzhou.aliyuncs.com/hpn-sdk/2.1.3/hpnsdk2.1.3-ubuntu2404-202611121836-x86_64.bin
+                HPN_SDK_URL="${HPN_SDK_URL-$default_hpn_url}" bash "$scripts/install_hpn_sdk.sh"
                 ubuntu_packages openmpi-bin
                 [[ $(mpi_version) == "$(<"$root/openmpi.version")" ]] || fail 'Open MPI package versions differ from the CPU build'
                 test -d /dev/infiniband

@@ -93,6 +93,10 @@ It builds both executables on a CPU runner using the same image digest as the
 workers, uploads the build once, and stages one verified copy on NAS. The MPI
 workers must match the Open MPI 4 package versions of the build. `cluster-run`
 provides the hostfile and passwordless launcher; no separate SSH setup is needed.
+Both MPI workers install the configured HPN SDK (2.1.3 by default). The
+shared MPI launcher starts remote daemons with `HWLOC_COMPONENTS=-gl`;
+forwarding the setting to ranks alone would not cover daemon startup.
+Neither setting changes CPU builds or single-node benchmark launches.
 
 Before starting the experiment, configure the repository variables
 `SAILBANDWIDTH_NAS_CONTROLLER_MOUNT`, `SAILBANDWIDTH_NAS_WORKER_MOUNT`, and
@@ -116,25 +120,25 @@ not produce a report. The experiment has no schedule and does not replace check-
 
 ### One-allocation MPI diagnosis on the experiment branch
 
-For the diagnostic push only, `SMOKE_MPI_DIAGNOSTIC: '1'` in the experiment
-workflow selects the reviewed 890P same-rack MPI group; neither single-node
-allocation nor the usual 11-Case reconciliation runs. Use `'0'` to restore the
-normal smoke workflow. The build includes a small MPI probe in the same
-SHA-256-verified archive as the benchmark only in diagnostic mode.
+Set `SMOKE_MPI_DIAGNOSTIC: '1'` in the experiment workflow to select only the
+reviewed 890P same-rack MPI group. Neither single-node allocation nor the usual
+11-Case reconciliation runs in this mode. Use `'0'` for normal smoke. The build
+includes a small MPI probe in the same SHA-256-verified archive as the benchmark
+only in diagnostic mode.
 
-Before the MPI probe, `setup_command` runs the PCCL-derived HPN installer on
-both diagnostic workers. Its default URL selects the same HPN SDK 2.1.3 build
-as the successful PCCL control. `HPN_SDK_URL` can override it in the worker
+Before the MPI probe, `setup_command` runs the same HPN installer used by
+regular two-node smoke. Its default URL selects the same HPN SDK 2.1.3
+build as the successful PCCL control. `HPN_SDK_URL` can override it in the worker
 setup environment; an explicitly empty value keeps the image's SDK. A nonempty
 URL must point to a public HTTPS `.bin` on `zone-ci.oss-cn-hangzhou.aliyuncs.com`
 and cannot include credentials, a query, or a fragment. Redirects are rejected.
 Downloads have bounded retries, and a failed download or install stops setup.
 Installer output stays in the run-owned worker setup log on NAS. The CPU build
-and ordinary smoke do not install HPN. This experiment still uses the same
+and single-node smoke do not install HPN. This experiment still uses the same
 Ubuntu Open MPI package on the CPU build and the workers.
 
 After both workers' NAS responses are verified, the master runs these stages
-using the scheduler hostfile and the smoke launcher, with one diagnostic override:
+using the scheduler hostfile and the smoke launcher:
 
 | Stage | Budget |
 | --- | ---: |
@@ -152,7 +156,7 @@ Keep stage stdout and stderr under the run-owned NAS `logs` directory. Worker
 setup logs record the default-route interface and MPI resolution both before and
 after prepending `/usr/bin`. The direct SSH probe records the remote session's
 hwloc setting, MPI executable paths and version. Open MPI 4 starts remote daemons
-as `env HWLOC_COMPONENTS=-gl orted` for this diagnosis, so the GL plugin is
+as `env HWLOC_COMPONENTS=-gl orted` in both smoke modes, so the GL plugin is
 excluded before daemon initialization even if the SSH session did not inherit
 the master environment. The MPI package, scheduler configuration, and hostname
 compression are unchanged. The master records hostfile names and DNS lookups on

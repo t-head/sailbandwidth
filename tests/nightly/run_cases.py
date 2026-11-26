@@ -33,7 +33,9 @@ def mpi_launch(group, hostfile, interface, env):
             hosts.append(line.split()[0])
     if len(hosts) != nodes or len(set(hosts)) != nodes:
         raise ValueError("Cluster hostfile does not contain one unique entry per allocated node")
+    # Rank environment forwarding happens after the remote daemon starts.
     env.update({"HWLOC_COMPONENTS": "-gl", "OMPI_MCA_plm_rsh_agent": "cluster-ssh",
+                "OMPI_MCA_orte_launch_agent": "env HWLOC_COMPONENTS=-gl orted",
                 "OMPI_MCA_orte_keep_fqdn_hostnames": "1", "OMPI_MCA_oob_tcp_if_include": interface,
                 "OMPI_MCA_btl_tcp_if_include": interface})
     keys = ("PATH", "LD_LIBRARY_PATH", "HWLOC_COMPONENTS", *sorted(ENV_KEYS))
