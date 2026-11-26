@@ -4,7 +4,7 @@ name: SailBandwidth nightly hardware smoke (experiment)
 
 on:
   push:
-    branches: [ci/sailbandwidth-nightly]
+    branches: [ci/sailbandwidth-mpi-diagnostics]
     paths:
       - .github/workflows/sailbandwidth-nightly-smoke.yml
       - tests/nightly/**
@@ -19,6 +19,8 @@ concurrency:
 env:
   SDK_IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
   SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
+  # Temporary mode for one diagnostic push; set to 0 to restore the regular smoke matrix.
+  SMOKE_MPI_DIAGNOSTIC: '1'
   SMOKE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
@@ -60,7 +62,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sailbandwidth-build-$SMOKE_KEY"
           revision=$(git rev-parse HEAD)
           test "$revision" = "$GITHUB_SHA"
-          docker run --rm --entrypoint /bin/bash \
+          docker run --rm --entrypoint /bin/bash -e SMOKE_MPI_DIAGNOSTIC \
             -v "$PWD:/workspace/source:ro" \
             -v "$RUNNER_TEMP/sailbandwidth-build-$SMOKE_KEY:/output" "$image" -euc '
               source_dir=$(mktemp -d)
@@ -95,6 +97,7 @@ jobs:
       SMOKE_IMAGE: ${{ needs.build.outputs.image }}
     outputs:
       matrix: ${{ steps.stage.outputs.matrix }}
+      mpi_diagnostic: ${{ steps.stage.outputs.mpi_diagnostic }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,10 +126,15 @@ jobs:
             --archive "$bundle/build.tar.gz" --identity "$root/build.json" \
             --cache "$root/cache/$SMOKE_BUILD_SHA"
           python3 -S -B tests/nightly/cases.py --dataset smoke --output "$root/selection" >/dev/null
-          python3 -S -B tests/nightly/smoke_ci.py matrix "$root/selection" >> "$GITHUB_OUTPUT"
+          set --
+          if [ "$SMOKE_MPI_DIAGNOSTIC" = 1 ]; then
+            set -- --mpi-only
+          fi
+          printf 'mpi_diagnostic=%s\n' "$SMOKE_MPI_DIAGNOSTIC" >> "$GITHUB_OUTPUT"
+          python3 -S -B tests/nightly/smoke_ci.py matrix "$root/selection" "$@" >> "$GITHUB_OUTPUT"
 
   execute:
-    name: Smoke (${{ matrix.id }}, ${{ matrix.case_count }} cases)
+    name: ${{ needs.stage.outputs.mpi_diagnostic == '1' && 'MPI diagnostics' || 'Smoke' }} (${{ matrix.id }})
     needs: [build, stage]
     runs-on: k8s-runner-group-cpu-thead
     container:
@@ -163,12 +171,13 @@ jobs:
           setup_command: |
             bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" setup
           command: |
-            bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" run
+            bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" \
+              '${{ needs.stage.outputs.mpi_diagnostic == '1' && 'diagnose-mpi' || 'run' }}'
 
   report:
     name: Reconcile smoke and write per-platform Excel reports
     needs: [build, stage, execute]
-    if: ${{ !cancelled() && needs.stage.result == 'success' }}
+    if: ${{ !cancelled() && needs.stage.result == 'success' && needs.stage.outputs.mpi_diagnostic == '0' }}
     runs-on: k8s-runner-group-cpu-thead
     container:
       image: ghcr.io/actions/actions-runner:latest

@@ -113,3 +113,32 @@ Two Excel reports, the per-case data and the raw logs stay in the run-owned NAS
 folder. Only status totals (plus the separate build artifact) are uploaded to
 GitHub. Missing or waived cases do not count as passing; a cancelled workflow may
 not produce a report. The experiment has no schedule and does not replace check-in.
+
+### One-allocation MPI diagnosis on the experiment branch
+
+For the diagnostic push only, `SMOKE_MPI_DIAGNOSTIC: '1'` in the experiment
+workflow selects the reviewed 890P same-rack MPI group; neither single-node
+allocation nor the usual 11-Case reconciliation runs. Use `'0'` to restore the
+normal smoke workflow. The build includes a small MPI probe in the same
+SHA-256-verified archive as the benchmark only in diagnostic mode.
+
+After both workers' NAS responses are verified, the master runs these stages
+using the scheduler hostfile and the same launcher configuration as smoke:
+
+| Stage | Budget |
+| --- | ---: |
+| One `hostname` process per worker | 30 s |
+| One rank per worker: `MPI_Init`, barrier and finalize | 60 s |
+| CE write, one PPU per worker, 16 MiB, one copy iteration, both directions | 90 s |
+| Original 16-rank CE write with unchanged benchmark arguments, all 240 pairs | 600 s |
+
+The first failure stops the sequence. A local timeout does not prove remote
+ranks exited; the allocation is not reused after a failed stage. No normal Case
+timeout, release workflow, or check-in workflow is changed.
+
+Keep stage stdout and stderr under the run-owned NAS `logs` directory. A scoped
+`SAILBANDWIDTH_MPI_PROGRESS=1` on the diagnostic benchmark ranks flushes MPI
+readiness and pair counts to stderr; it adds no messages to `-F perf` and does
+not log inside the measured copy. Do not use diagnostic measurements for
+performance comparisons. The diagnostic job only passes after the expected
+measurements include both directed small-pair cells and all 240 full-run cells.

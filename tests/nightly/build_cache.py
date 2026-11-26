@@ -21,6 +21,7 @@ from cases import NAME, REVISION, read_json, write_json
 ARCHIVE = "build.tar.gz"
 IDENTITY = "build.json"
 BINARIES = {f"comm_tools/{mode}/sailbandwidth" for mode in ("single_process", "multi_process")}
+MPI_PROBE = "comm_tools/multi_process/mpi_probe"
 BUILD_KEYS = {"revision", "package", "sdk", "sha256"}
 
 
@@ -116,17 +117,17 @@ def package_members(package):
     members = {}
     for member in package:
         key = member.name.removeprefix("./")
-        if key in BINARIES:
+        if key in BINARIES or key == MPI_PROBE:
             if not member.isfile() or key in members or not (0 < member.size <= 1024**3):
                 raise ValueError(f"Invalid benchmark package member: {key}")
             members[key] = member
-    if set(members) != BINARIES:
+    if not BINARIES <= members.keys():
         raise ValueError("The release must contain both single-node and MPI binaries")
     return members
 
 
 def extract(directory, output, expected):
-    """Extract just the two benchmark binaries, never release tar paths or links."""
+    """Extract only the benchmark binaries and optional diagnostic probe, never archive links."""
     archive = validate(directory, expected)
     with tarfile.open(archive, mode="r:gz") as package:
         members = package_members(package)

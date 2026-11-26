@@ -21,6 +21,8 @@
 #include "output.h"
 #ifdef MULTINODE
 #include <mpi.h>
+#include <cstdio>
+#include <cstdlib>
 #include "multinode_memcpy.h"
 
 // ============================================================================
@@ -51,18 +53,33 @@ void MultinodeDeviceToDeviceTransfer::run(unsigned long long size, unsigned long
 
     auto pairs = generateTestPairs(worldSize, gSettings.targetNumPairs);
 
+    const char* progress = std::getenv("SAILBANDWIDTH_MPI_PROGRESS");
+    const bool trace = worldRank == 0 && progress && progress[0] == '1' && progress[1] == '\0';
+    if (trace) {
+        std::fprintf(stderr, "[mpi-progress] %s: starting %zu pairs\n", key.c_str(), pairs.size());
+        std::fflush(stderr);
+    }
+
+    size_t completed = 0;
     for (const auto& pair : pairs) {
-        int srcDeviceId = pair.first;
-        int peerDeviceId = pair.second;
+        const int srcDeviceId = pair.first;
+        const int peerDeviceId = pair.second;
+        {
+            MultinodeDeviceBufferUnicast srcNode(size, srcDeviceId);
+            MultinodeDeviceBufferUnicast peerNode(size, peerDeviceId);
 
-        MultinodeDeviceBufferUnicast srcNode(size, srcDeviceId);
-        MultinodeDeviceBufferUnicast peerNode(size, peerDeviceId);
-
-        if (accessType_ == AccessType::Read) {
-            // swap src and peer nodes, but use srcNodes (the copy's destination) context
-            bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(peerNode, srcNode);
-        } else {
-            bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(srcNode, peerNode);
+            if (accessType_ == AccessType::Read) {
+                // Swap source and peer to use the destination context.
+                bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(peerNode, srcNode);
+            } else {
+                bandwidthValues.value(srcDeviceId, peerDeviceId) = memcpyInstance.doMemcpy(srcNode, peerNode);
+            }
+        }
+        // Both buffers have been released; do not log inside the measured copy.
+        if (trace && (++completed == 1 || completed % 16 == 0 || completed == pairs.size())) {
+            std::fprintf(stderr, "[mpi-progress] %s: completed %zu/%zu pairs\n",
+                         key.c_str(), completed, pairs.size());
+            std::fflush(stderr);
         }
     }
 

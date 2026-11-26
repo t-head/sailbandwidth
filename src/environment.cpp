@@ -20,6 +20,8 @@
 
 #include "common.h"
 #include "error_handling.h"
+#include <cstdio>
+#include <cstdlib>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -72,6 +74,11 @@ void MultiNodeEnv::initialize(int argc, char** argv) {
         if (strncmp(localHost.data(), &hostnameExchange[i * STRING_LENGTH], STRING_LENGTH) == 0) {
             localRank++;
         }
+    }
+    const char* progress = std::getenv("SAILBANDWIDTH_MPI_PROGRESS");
+    if (rank == 0 && progress && progress[0] == '1' && progress[1] == '\0') {
+        std::fprintf(stderr, "[mpi-progress] MPI ready: %d ranks\n", size);
+        std::fflush(stderr);
     }
 }
 

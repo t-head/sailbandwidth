@@ -79,9 +79,12 @@ def record_nas_probe(root, group, rank):
         handle.write(token)
 
 
-def verify_nas_probes(root):
+def verify_nas_probes(root, only_group=None):
     token = read_nas_challenge(root)
-    expected = {f"{group}-{rank}" for group, rank in nas_probe_slots(root)}
+    expected = {f"{group}-{rank}" for group, rank in nas_probe_slots(root)
+                if only_group is None or group == only_group}
+    if not expected:
+        raise ValueError("No expected NAS probe slots for the selected group")
     actual = {entry.name: entry for entry in (root / NAS_PROBES).iterdir()}
     if actual.keys() != expected:
         raise ValueError(f"Wrong NAS probes: missing={sorted(expected - actual.keys())}, "
@@ -117,6 +120,7 @@ def main():
                                            "write-nas-challenge", "record-nas-probe", "verify-nas-probes"))
     parser.add_argument("path", type=Path)
     parser.add_argument("--identity-only", action="store_true")
+    parser.add_argument("--mpi-only", action="store_true")
     parser.add_argument("--group")
     parser.add_argument("--rank", type=int)
     args = parser.parse_args()
@@ -124,7 +128,10 @@ def main():
         verify_build(args.path, os.environ["GITHUB_SHA"], os.environ["SMOKE_IMAGE"],
                      os.environ["SMOKE_BUILD_SHA"], args.identity_only)
     elif args.action == "matrix":
-        print("matrix=" + json.dumps(smoke_matrix(args.path), separators=(",", ":")))
+        matrix = smoke_matrix(args.path)
+        if args.mpi_only:
+            matrix["include"] = [group for group in matrix["include"] if group["nodes"] == 2]
+        print("matrix=" + json.dumps(matrix, separators=(",", ":")))
     elif args.action == "public-summary":
         print(json.dumps(public_summary(read_json(args.path)), indent=2))
     else:

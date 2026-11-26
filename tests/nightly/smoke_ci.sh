@@ -62,6 +62,10 @@ case ${1:-} in
         install -m 755 build/sailbandwidth "$staging/comm_tools/single_process/sailbandwidth"
         bash build.sh --rebuild --use_mpi --cpu_num 8
         install -m 755 build/sailbandwidth "$staging/comm_tools/multi_process/sailbandwidth"
+        if [[ ${SMOKE_MPI_DIAGNOSTIC:-0} == 1 ]]; then
+            mpicc -O2 -Wall -Wextra -Werror "$scripts/mpi_probe.c" \
+                -o "$staging/comm_tools/multi_process/mpi_probe"
+        fi
         tar -czf "$output/build.tar.gz" -C "$staging" comm_tools
         mpi_version > "$output/openmpi.version"
         ;;
@@ -80,10 +84,13 @@ case ${1:-} in
                 [[ $(mpi_version) == "$(<"$root/openmpi.version")" ]] || fail 'Open MPI package versions differ from the CPU build'
                 test -d /dev/infiniband
             fi
+            if [[ ${SMOKE_MPI_DIAGNOSTIC:-0} == 1 ]]; then
+                printf 'Diagnostic host: %s\n' "$(hostname)"
+            fi
             ppu-smi -L
         ) > "$root/logs/$group-$rank.log" 2>&1
         ;;
-    run)
+    run|diagnose-mpi)
         root=$(nas_run)
         sdk_env
         export PATH="/usr/bin:$PATH"
@@ -96,10 +103,15 @@ case ${1:-} in
             export HWLOC_COMPONENTS=-gl
             args=(--hostfile "$CLUSTER_HOSTS_FILE" --mpi-interface "$iface")
         fi
+        if [[ $1 == diagnose-mpi ]]; then
+            [[ ${SMOKE_NODES:?} == 2 ]] || fail 'MPI diagnostics require two workers'
+            exec python3 -S -B "$scripts/diagnose_mpi.py" \
+                --root "$root" --group "${SMOKE_GROUP:?}" --build-sha "${SMOKE_BUILD_SHA:?}" "${args[@]}"
+        fi
         python3 -S -B "$scripts/run_cases.py" \
             --group "$root/selection/${SMOKE_GROUP:?}" \
             --cache "$root/cache/${SMOKE_BUILD_SHA:?}" --identity "$root/build.json" \
             --output "$root/results/$SMOKE_GROUP" --work-root "$root/scratch" "${args[@]}"
         ;;
-    *) fail 'Usage: smoke_ci.sh build OUTPUT | nas-run | setup | run' ;;
+    *) fail 'Usage: smoke_ci.sh build OUTPUT | nas-run | setup | run | diagnose-mpi' ;;
 esac
