@@ -26,8 +26,10 @@ python3 -S -B tests/nightly/cases.py --dataset smoke --output "$RUN_DIR/selectio
 ```
 
 The tooling is standard-library-only except optional Excel reporting
-(`XlsxWriter==3.2.9` on the report runner). No benchmark execution dependency is
-added. The unit tests exercise real local subprocesses with fixture binaries;
+(`XlsxWriter==3.2.9` on the report runner). The CPU build runner fetches the
+pinned pure-Python wheel, and the report job rechecks its SHA-256 before import.
+No pip, virtual environment, or package registry access is needed on the report
+runner. No benchmark execution dependency is added. The unit tests exercise real local subprocesses with fixture binaries;
 they do not validate the Sail SDK, hardware or MPI transport.
 
 ## Workflow integration contract

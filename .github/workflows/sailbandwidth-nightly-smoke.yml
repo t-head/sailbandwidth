@@ -21,6 +21,8 @@ env:
   SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
   # Diagnostic mode (1) selects only the two-worker MPI group.
   SMOKE_MPI_DIAGNOSTIC: '0'
+  XLSXWRITER_WHEEL: xlsxwriter-3.2.9-py3-none-any.whl
+  XLSXWRITER_SHA256: 9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3
   SMOKE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
@@ -45,6 +47,17 @@ jobs:
           : "${WORKER_MOUNT:?Set SAILBANDWIDTH_NAS_WORKER_MOUNT}"
           : "${SMOKE_NAS_SUBDIR:?Set SAILBANDWIDTH_NAS_SUBDIR}"
           python3 -S -B -m unittest discover -s tests/nightly -v
+      - name: Fetch and verify the report wheel
+        if: env.SMOKE_MPI_DIAGNOSTIC == '0'
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/sailbandwidth-build-$SMOKE_KEY"
+          mkdir -p "$bundle"
+          url="https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/$XLSXWRITER_WHEEL"
+          wheel="$bundle/$XLSXWRITER_WHEEL"
+          curl --fail --silent --show-error --proto '=https' --connect-timeout 10 \
+            --max-time 60 --retry 3 --retry-all-errors --retry-max-time 180 --output "$wheel" "$url"
+          printf '%s  %s\n' "$XLSXWRITER_SHA256" "$wheel" | sha256sum --check --strict
       - id: build
         name: Build and seal one archive
         run: |
@@ -113,6 +126,10 @@ jobs:
           root=$(bash tests/nightly/smoke_ci.sh nas-run)
           bundle="$RUNNER_TEMP/sailbandwidth-download-$SMOKE_KEY"
           python3 -S -B tests/nightly/smoke_ci.py validate-build "$bundle"
+          wheel="$bundle/$XLSXWRITER_WHEEL"
+          if [ "$SMOKE_MPI_DIAGNOSTIC" = 0 ]; then
+            printf '%s  %s\n' "$XLSXWRITER_SHA256" "$wheel" | sha256sum --check --strict
+          fi
           umask 022
           mkdir -- "$root" 2>/dev/null || {
             echo '::error::Cannot create a fresh smoke run directory on NAS; check staging permissions and the run attempt.'
@@ -122,6 +139,9 @@ jobs:
           install -d -m 1777 "$root/results" "$root/scratch" "$root/logs" "$root/nas-probes"
           python3 -S -B tests/nightly/smoke_ci.py write-nas-challenge "$root"
           install -m 644 "$bundle/build.json" "$bundle/openmpi.version" "$root/"
+          if [ "$SMOKE_MPI_DIAGNOSTIC" = 0 ]; then
+            install -m 644 "$wheel" "$root/"
+          fi
           python3 -S -B tests/nightly/build_cache.py publish \
             --archive "$bundle/build.tar.gz" --identity "$root/build.json" \
             --cache "$root/cache/$SMOKE_BUILD_SHA"
@@ -190,11 +210,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install report-only dependency
-        run: |
-          python3 -m venv "$RUNNER_TEMP/sailbandwidth-report-venv"
-          "$RUNNER_TEMP/sailbandwidth-report-venv/bin/python" -m pip --isolated install \
-            --index-url https://pypi.org/simple --retries 3 XlsxWriter==3.2.9
       - id: report
         name: Retain detailed reports on NAS and publish only status totals
         env:
@@ -203,6 +218,12 @@ jobs:
           set -eu
           root=$(bash tests/nightly/smoke_ci.sh nas-run)
           python3 -S -B tests/nightly/smoke_ci.py validate-build "$root" --identity-only
+          # Verify the local copy before importing it; NAS is shared with workers.
+          report_deps=$(mktemp -d "$RUNNER_TEMP/sailbandwidth-report.XXXXXX")
+          trap 'rm -rf -- "$report_deps"' EXIT
+          wheel="$report_deps/$XLSXWRITER_WHEEL"
+          install -m 600 "$root/$XLSXWRITER_WHEEL" "$wheel"
+          printf '%s  %s\n' "$XLSXWRITER_SHA256" "$wheel" | sha256sum --check --strict
           nas_rc=0
           python3 -S -B tests/nightly/smoke_ci.py verify-nas-probes "$root" \
             > "$root/logs/nas-probes.log" 2>&1 || nas_rc=$?
@@ -210,7 +231,7 @@ jobs:
             echo '::error::NAS read/write probes did not complete for every smoke worker; see the retained NAS diagnostics.'
           fi
           rc=0
-          "$RUNNER_TEMP/sailbandwidth-report-venv/bin/python" -B tests/nightly/report.py \
+          PYTHONPATH="$wheel" python3 -S -B tests/nightly/report.py \
             --selection "$root/selection" --results "$root/results" --identity "$root/build.json" \
             --output "$root/reports" --excel > "$root/logs/reconciliation.log" 2>&1 || rc=$?
           if [ -f "$root/reports/summary.json" ]; then
