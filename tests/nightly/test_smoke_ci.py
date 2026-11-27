@@ -45,8 +45,9 @@ class SmokeCI(unittest.TestCase):
             self.assertEqual(len(rows), 3)
             self.assertEqual({(row["platform"], row["nodes"]):
                               (row["case_count"], row["cluster_timeout_minutes"], row["job_timeout_minutes"])
-                              for row in rows}, {("m890p-cx8", 1): (48, 300, 325), ("m890p-cx8", 2): (10, 105, 130),
-                                                 ("810e-eic", 1): (37, 255, 280)})
+                              for row in rows}, {("m890p-cx8", 1): (48, 1440, 1465),
+                                                 ("m890p-cx8", 2): (10, 1440, 1465),
+                                                 ("810e-eic", 1): (37, 1440, 1465)})
             result = subprocess.run([sys.executable, "-S", "-B", str(cases.ROOT / "smoke_ci.py"), "matrix",
                                      str(output), "--dataset", "full", "--mpi-only"], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
@@ -66,7 +67,7 @@ class SmokeCI(unittest.TestCase):
             self.assertEqual((row["platform"], row["nodes"], row["cards_per_node"]), ("m890p-cx8", 1, 8))
             self.assertEqual((row["cluster_timeout_minutes"], row["job_timeout_minutes"]), (75, 100))
             _, _, [case] = cases.load_group(output / row["id"])
-            self.assertEqual((case.family, case.name), cases.VPIPE_DIAGNOSTIC_CASE)
+            self.assertEqual((case.family, case.name), cases.VPIPE_CASE)
             self.assertEqual(case.arguments, ["--enableVpipeIdReadOptimize"])
             self.assertEqual(case.timeout, 1200)
             (root / smoke_ci.NAS_PROBES).mkdir()

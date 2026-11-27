@@ -30,8 +30,8 @@ VPIPE = {"--enableVpipeIdReadOptimize", "--useSingleLinkForIcnRead",
 FLAGS = VPIPE | {"--displayUR", "--disableVm", "--enableSplitSizeReadOptimize"}
 CSV_FIELDS = ["family", "name", "timeout_seconds", "arguments"]
 DATASETS = ("smoke", "full", "vpipe")
-VPIPE_DIAGNOSTIC_CASE = ("m890p-functional", "test_op_sailbandwidth_vpipeid")
-VPIPE_DIAGNOSTIC_TIMEOUT = 1200
+VPIPE_CASE = ("m890p-functional", "test_op_sailbandwidth_vpipeid")
+VPIPE_TIMEOUT_SECONDS = 1200
 
 
 def unique_object(pairs):
@@ -110,7 +110,14 @@ def make_case(family, name, timeout, arguments):
     return Case(family, name, timeout, arguments)
 
 
+def is_vpipe_default_case(case):
+    return (case.family, case.name) == VPIPE_CASE and case.arguments == ["--enableVpipeIdReadOptimize"]
+
+
 def execution_budget(case):
+    # The default-test invocation took over 12 minutes on eight M890P devices.
+    if is_vpipe_default_case(case) and case.timeout < VPIPE_TIMEOUT_SECONDS:
+        return replace(case, timeout=VPIPE_TIMEOUT_SECONDS)
     # The adapted 16-PPU EIC case sweeps up to 240 ordered pairs serially.
     # Keep the snapshot unchanged and budget the same benchmark arguments.
     if (case.family == "810e-performance" and
@@ -172,10 +179,10 @@ def generate(source, output, dataset):
         raise ValueError("Incomplete family coverage")
     if dataset == "vpipe":
         [(resources, case)] = [(resources, case) for resources, cases in staged.items() for case in cases
-                               if (case.family, case.name) == VPIPE_DIAGNOSTIC_CASE]
-        if case.arguments != ["--enableVpipeIdReadOptimize"]:
+                               if (case.family, case.name) == VPIPE_CASE]
+        if not is_vpipe_default_case(case):
             raise ValueError("The Vpipe diagnostic requires the original default-test command")
-        staged = {resources: [replace(case, timeout=VPIPE_DIAGNOSTIC_TIMEOUT)]}
+        staged = {resources: [case]}
 
     output.mkdir(parents=True, exist_ok=False)
     manifest = {"format_version": 1, "dataset": dataset, "source_revision": revision, "groups": []}

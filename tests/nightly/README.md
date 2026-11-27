@@ -46,16 +46,16 @@ mode. The full selection uses the same three allocations and one shared build.
 
 | Allocation | Cluster timeout | Controller job timeout |
 | --- | ---: | ---: |
-| M890P CX8, 1 node × 8 PPUs | 300 min | 325 min |
-| M890P CX8, same-rack 2 nodes × 8 PPUs | 105 min | 130 min |
-| 810E EIC, 1 node × 16 PPUs | 255 min | 280 min |
+| M890P CX8, 1 node × 8 PPUs | 1440 min | 1465 min |
+| M890P CX8, same-rack 2 nodes × 8 PPUs | 1440 min | 1465 min |
+| 810E EIC, 1 node × 16 PPUs | 1440 min | 1465 min |
 
-The cluster timeout covers scheduling, setup and benchmark execution. The full
-budget sums effective per-Case timeouts, adds 10 seconds per Case for termination
-and 45 minutes for queueing and setup, then rounds up to a 15-minute boundary.
-The controller job allows 25 extra minutes. Smoke keeps its 90- and 115-minute
-budgets. None of these limits changes the per-Case execution timeout or the
-production nightly schedule.
+Each full allocation has a 24-hour cluster deadline shared by scheduling,
+setup and benchmark execution. The controller job allows 25 extra minutes
+for steps outside that deadline. Smoke keeps its 90- and 115-minute limits,
+and the one-case Vpipe diagnostic keeps its 75- and 100-minute limits. The
+longer full budget does not raise any per-Case timeout or change the production
+nightly schedule.
 
 ## One-case Vpipe diagnostic
 
@@ -63,11 +63,13 @@ The experimental workflow selects `vpipe` for a push whose commit title starts
 with `test: diagnose the SailBandwidth Vpipe suite timeout`. It runs only
 `test_op_sailbandwidth_vpipeid` on one M890P CX8 host with eight PPUs, without
 waiting for a concurrently running full experiment. The benchmark arguments and
-sample count are unchanged; only this diagnostic uses a 1200-second Case limit.
-The benchmark writes flushed per-testcase progress to `testcase-progress.log`
-ext to `raw.log` on NAS via `SAILBANDWIDTH_TESTCASE_PROGRESS_LOG`. Timing covers
-filtering and execution of each internal testcase, not just timed copies. The
-progress log is not part of the performance stream or a public artifact.
+sample count are unchanged. The default-test invocation uses a Case timeout of
+at least 1200 seconds in both the full selection and this diagnostic. The four
+single-link M890P Cases retain their source budgets. The benchmark writes
+flushed per-testcase progress to `testcase-progress.log` next to `raw.log` on
+NAS via `SAILBANDWIDTH_TESTCASE_PROGRESS_LOG`. This timing covers filtering and
+execution of each internal testcase, not just timed copies. The progress log
+is not part of the performance stream or a public artifact.
 
 ## Workflow integration contract
 
