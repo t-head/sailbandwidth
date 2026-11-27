@@ -18,6 +18,9 @@
 
 #include <argparse/argparse.hpp>
 #include <hgml.h>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 
@@ -198,6 +201,15 @@ std::vector<std::string> expandTestcases(std::vector<Testcase*> &testcases, std:
     return testcasesToRun;
 }
 
+// Optional progress goes to its own file so the perf stream remains unchanged.
+static std::ostream* testcaseProgress() {
+    const char* path = std::getenv("SAILBANDWIDTH_TESTCASE_PROGRESS_LOG");
+    if (worldRank != 0 || path == nullptr || *path == '\0') return nullptr;
+    static std::ofstream progress(path, std::ios::app);
+    if (!progress) throw std::runtime_error("Cannot open testcase progress log");
+    return &progress;
+}
+
 void runTestcase(std::vector<Testcase*> &testcases, const std::string &testcaseID) {
     Testcase* test{nullptr};
     try {
@@ -211,10 +223,21 @@ void runTestcase(std::vector<Testcase*> &testcases, const std::string &testcaseI
         return;
     }
 
+    auto* progress = testcaseProgress();
+    const auto started = progress ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const auto logProgress = [&](const char* phase) {
+        if (progress) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
+            *progress << phase << ' ' << testcaseID << ' ' << elapsed.count() << " ms" << std::endl;
+        }
+    };
+    logProgress("START");
     try {
         auto filterResult = test->filter();
         if (!filterResult) {
             output->addTestcase(test->testKey(), SBW_WAIVED, filterResult.reason);
+            logProgress("WAIVED");
             return;
         }
 
@@ -229,7 +252,9 @@ void runTestcase(std::vector<Testcase*> &testcases, const std::string &testcaseI
         } else {
             test->run(gSettings.bufferSizeMiB * _MiB, gSettings.loopCount);
         }
+        logProgress("FINISH");
     } catch (std::string &s) {
+        logProgress("ERROR");
         output->setTestcaseStatusAndAddIfNeeded(test->testKey(), SBW_ERROR_STATUS, s);
     }
 }

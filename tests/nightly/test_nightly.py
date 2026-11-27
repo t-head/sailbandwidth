@@ -219,14 +219,23 @@ class ExecutionTests(unittest.TestCase):
     def test_real_subprocess_smoke_generation_execution_and_excel(self):
         self.check_execution_and_excel("smoke", {"810e-eic": {"PASSED": 4}, "m890p-cx8": {"PASSED": 7}})
 
+    def test_real_subprocess_vpipe_progress_is_separate_from_perf(self):
+        self.check_execution_and_excel("vpipe", {"m890p-cx8": {"PASSED": 1}})
+
     def check_execution_and_excel(self, dataset, expected_counts):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = cases.generate(cases.ROOT / "families.json", root / "selection", dataset)
             command = f'''#!{sys.executable}
+import os
+from pathlib import Path
 import sys
 args = sys.argv[1:]
 assert args[-2:] == ['-F', 'perf']
+trace = os.getenv('{run_cases.PROGRESS_LOG_ENV}')
+if trace:
+    assert args == ['--enableVpipeIdReadOptimize', '-F', 'perf']
+    Path(trace).write_text('START fixture 0 ms\\nFINISH fixture 1 ms\\n')
 name = args[args.index('-t') + 1] if '-t' in args else '{OP}'
 unit = '-ns' if 'latency' in name else '+GB/s'
 print(f'&&&& PERF sailbandwidth/{{name}}/PPU0/PPU1 12.5 {{unit}}')
@@ -247,12 +256,21 @@ os.execv(args[idx], args[idx:])
             launcher.chmod(0o755)
             hostfile = root / "hosts"
             hostfile.write_text("worker-0 slots=8\nworker-1 slots=8\n", encoding="utf-8")
-            with patch.dict(os.environ, {"PATH": str(root) + os.pathsep + os.environ["PATH"]}):
+            with patch.dict(os.environ, {"PATH": str(root) + os.pathsep + os.environ["PATH"],
+                                         run_cases.PROGRESS_LOG_ENV: str(root / "inherited.log")}):
                 for group in manifest["groups"]:
                     mpi = group["nodes"] > 1
                     run_cases.run(root / "selection" / group["id"], cache, identity,
                                   root / "results" / group["id"], root, hostfile if mpi else None,
                                   "eth0" if mpi else None)
+            self.assertFalse((root / "inherited.log").exists())
+            traces = list((root / "results").glob("*/*/*/testcase-progress.log"))
+            if dataset == "vpipe":
+                self.assertEqual(len(traces), 1)
+                self.assertIn("FINISH fixture", traces[0].read_text(encoding="utf-8"))
+                self.assertNotIn("START fixture", traces[0].with_name("raw.log").read_text(encoding="utf-8"))
+            else:
+                self.assertEqual(traces, [])
             counts = report.report(root / "selection", root / "results", expected, root / "csv")
             self.assertEqual(counts["platforms"], expected_counts)
             self.assertEqual(smoke_ci.public_summary(counts, dataset=dataset)["platforms"], expected_counts)

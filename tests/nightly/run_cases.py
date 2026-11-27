@@ -15,8 +15,11 @@ import tempfile
 import time
 
 from build_cache import extract, identity
-from cases import ENV_KEYS, VPIPE, load_group, validate_arguments, write_json
+from cases import ENV_KEYS, VPIPE, load_group, load_manifest, validate_arguments, write_json
 from performance import METRIC_FIELDS, interpret
+
+
+PROGRESS_LOG_ENV = "SAILBANDWIDTH_TESTCASE_PROGRESS_LOG"
 
 
 def mpi_launch(group, hostfile, interface, env):
@@ -70,11 +73,15 @@ def interrupt_on_term():
         signal.signal(signal.SIGTERM, previous)
 
 
-def execute_case(case, group, env, argv, output, build):
+def execute_case(case, group, env, argv, output, build, *, progress=False):
     output.mkdir(parents=True)
     work = output / "work"
     work.mkdir()
     (output / "command.txt").write_text(shlex.join(argv) + "\n", encoding="utf-8")
+    env = env.copy()
+    env.pop(PROGRESS_LOG_ENV, None)
+    if progress:
+        env[PROGRESS_LOG_ENV] = str((output / "testcase-progress.log").resolve())
     start = time.monotonic()
     returncode, metrics = None, []
     raw = output / "raw.log"
@@ -115,7 +122,7 @@ def execute_case(case, group, env, argv, output, build):
     return result
 
 
-def run_group(group, cases, env, launcher, binary, output, build):
+def run_group(group, cases, env, launcher, binary, output, build, *, progress=False):
     blocked = False
     with interrupt_on_term():
         for case in cases:
@@ -128,7 +135,7 @@ def run_group(group, cases, env, launcher, binary, output, build):
                 write_json(result_dir / "result.json", result)
             else:
                 result = execute_case(case, group, env, [*launcher, str(binary), *case.arguments, "-F", "perf"],
-                                      result_dir, build)
+                                      result_dir, build, progress=progress)
                 # Killing a local launcher cannot prove the remote ranks stopped.
                 # Until remote recovery is validated, only continue after a clean local launch.
                 blocked = bool(launcher and (result["status"] in {"TIMED_OUT", "EXECUTION_ERROR"} or
@@ -138,6 +145,7 @@ def run_group(group, cases, env, launcher, binary, output, build):
 
 def run(directory, cache, identity_path, output, work_root, hostfile=None, interface=None):
     group, shared_env, cases = load_group(directory)
+    progress = load_manifest(directory.parent)["dataset"] == "vpipe"
     build = identity(identity_path)
     env = {**os.environ, **shared_env}
     launcher = mpi_launch(group, hostfile, interface, env)
@@ -151,7 +159,7 @@ def run(directory, cache, identity_path, output, work_root, hostfile=None, inter
         stage = Path(scratch) / "build"
         extract(cache, stage, build)
         binary = stage / "comm_tools" / mode / "sailbandwidth"
-        run_group(group, cases, env, launcher, binary, output, build)
+        run_group(group, cases, env, launcher, binary, output, build, progress=progress)
 
 
 def main():

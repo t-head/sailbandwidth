@@ -57,6 +57,27 @@ class SmokeCI(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Wrong full coverage"):
                 smoke_ci.selection_matrix(output, "full")
 
+    def test_vpipe_diagnostic_selects_only_the_default_test_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "selection"
+            cases.generate(cases.ROOT / "families.json", output, "vpipe")
+            row, = smoke_ci.selection_matrix(output, "vpipe")["include"]
+            self.assertEqual((row["platform"], row["nodes"], row["cards_per_node"]), ("m890p-cx8", 1, 8))
+            self.assertEqual((row["cluster_timeout_minutes"], row["job_timeout_minutes"]), (75, 100))
+            _, _, [case] = cases.load_group(output / row["id"])
+            self.assertEqual((case.family, case.name), cases.VPIPE_DIAGNOSTIC_CASE)
+            self.assertEqual(case.arguments, ["--enableVpipeIdReadOptimize"])
+            self.assertEqual(case.timeout, 1200)
+            (root / smoke_ci.NAS_PROBES).mkdir()
+            smoke_ci.write_nas_challenge(root)
+            smoke_ci.record_nas_probe(root, row["id"], 0, dataset="vpipe")
+            smoke_ci.verify_nas_probes(root, dataset="vpipe")
+            selection = output / row["id"] / "cases.csv"
+            selection.write_text(selection.read_text().replace(",1200,", ",300,"))
+            with self.assertRaisesRegex(ValueError, "Wrong Vpipe diagnostic"):
+                smoke_ci.selection_matrix(output, "vpipe")
+
     def test_download_must_match_build_commit_image_and_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp)

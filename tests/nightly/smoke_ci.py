@@ -10,16 +10,16 @@ import re
 import secrets
 
 from build_cache import ARCHIVE, IDENTITY, digest, identity
-from cases import SELECTORS, load_group, load_manifest, read_json
+from cases import SELECTORS, VPIPE_DIAGNOSTIC_CASE, VPIPE_DIAGNOSTIC_TIMEOUT, load_group, load_manifest, read_json
 from report import RECORDED
 
 
 SMOKE_GROUPS = {("810e-eic", 1, 16): 4, ("m890p-cx8", 1, 8): 5, ("m890p-cx8", 2, 8): 2}
 FULL_GROUPS = {("810e-eic", 1, 16): 37, ("m890p-cx8", 1, 8): 48, ("m890p-cx8", 2, 8): 10}
-DATASET_GROUPS = {"smoke": SMOKE_GROUPS, "full": FULL_GROUPS}
+DATASET_GROUPS = {"smoke": SMOKE_GROUPS, "full": FULL_GROUPS, "vpipe": {("m890p-cx8", 1, 8): 1}}
 SMOKE_CLUSTER_MINUTES = 90
 JOB_HEADROOM_MINUTES = 25
-FULL_SETUP_AND_QUEUE_MINUTES = 45
+SETUP_AND_QUEUE_MINUTES = 45
 CASE_CLEANUP_SECONDS = 10
 BUDGET_ROUNDING_MINUTES = 15
 PACKAGE = "ubuntu24-hggcrt13"
@@ -47,7 +47,7 @@ def cluster_budget(dataset, cases):
         return SMOKE_CLUSTER_MINUTES
     # The action shares its timeout across scheduling, setup and execution.
     # Leave room for the executor's bounded TERM/KILL waits for each Case.
-    seconds = FULL_SETUP_AND_QUEUE_MINUTES * 60 + sum(case.timeout + CASE_CLEANUP_SECONDS for case in cases)
+    seconds = SETUP_AND_QUEUE_MINUTES * 60 + sum(case.timeout + CASE_CLEANUP_SECONDS for case in cases)
     quantum = BUDGET_ROUNDING_MINUTES * 60
     return ((seconds + quantum - 1) // quantum) * BUDGET_ROUNDING_MINUTES
 
@@ -66,6 +66,9 @@ def selection_matrix(selection, dataset):
                 group["node_selector"] != SELECTORS[platform] or
                 group["rack_policy"] != ("same" if nodes == 2 else "")):
             raise ValueError(f"Unexpected {dataset} allocation or rack policy")
+        if dataset == "vpipe" and [(case.family, case.name, case.arguments, case.timeout) for case in cases] != [
+                (*VPIPE_DIAGNOSTIC_CASE, ["--enableVpipeIdReadOptimize"], VPIPE_DIAGNOSTIC_TIMEOUT)]:
+            raise ValueError("Wrong Vpipe diagnostic Case, arguments or timeout")
         resources[spec] = len(cases)
         budget = cluster_budget(dataset, cases)
         rows.append(dict(group, cluster_timeout_minutes=budget, job_timeout_minutes=budget + JOB_HEADROOM_MINUTES))
@@ -126,8 +129,9 @@ def verify_nas_probes(root, only_group=None, *, dataset="smoke"):
 def public_summary(summary, *, dataset="smoke"):
     """Publish only platform counters, not raw logs, case details or paths."""
     platforms = summary["platforms"]
-    expected = {platform: sum(count for (key, _, _), count in DATASET_GROUPS[dataset].items() if key == platform)
-                for platform in SELECTORS}
+    expected = {}
+    for (platform, _, _), count in DATASET_GROUPS[dataset].items():
+        expected[platform] = expected.get(platform, 0) + count
     if summary["dataset"] != dataset or set(platforms) != set(expected):
         raise ValueError(f"Expected complete {dataset} platform totals")
     allowed_statuses = RECORDED | {"MISSING", "INVALID_RESULT"}

@@ -140,5 +140,5 @@ case ${1:-} in
             --cache "$root/cache/${SMOKE_BUILD_SHA:?}" --identity "$root/build.json" \
             --output "$root/results/$SMOKE_GROUP" --work-root "$root/scratch" "${args[@]}"
         ;;
-    *) fail 'Usage: smoke_ci.sh build OUTPUT | nas-run | setup [smoke|full] | run | diagnose-mpi' ;;
+    *) fail 'Usage: smoke_ci.sh build OUTPUT | nas-run | setup [smoke|full|vpipe] | run | diagnose-mpi' ;;
 esac

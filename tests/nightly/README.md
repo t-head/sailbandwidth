@@ -57,6 +57,18 @@ The controller job allows 25 extra minutes. Smoke keeps its 90- and 115-minute
 budgets. None of these limits changes the per-Case execution timeout or the
 production nightly schedule.
 
+## One-case Vpipe diagnostic
+
+The experimental workflow selects `vpipe` for a push whose commit title starts
+with `test: diagnose the SailBandwidth Vpipe suite timeout`. It runs only
+`test_op_sailbandwidth_vpipeid` on one M890P CX8 host with eight PPUs, without
+waiting for a concurrently running full experiment. The benchmark arguments and
+sample count are unchanged; only this diagnostic uses a 1200-second Case limit.
+The benchmark writes flushed per-testcase progress to `testcase-progress.log`
+ext to `raw.log` on NAS via `SAILBANDWIDTH_TESTCASE_PROGRESS_LOG`. Timing covers
+filtering and execution of each internal testcase, not just timed copies. The
+progress log is not part of the performance stream or a public artifact.
+
 ## Workflow integration contract
 
 Keep the existing check-in and release publication jobs separate. Initially

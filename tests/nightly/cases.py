@@ -29,6 +29,9 @@ VPIPE = {"--enableVpipeIdReadOptimize", "--useSingleLinkForIcnRead",
          "--linkId", "--vpipeIdForDie0", "--vpipeIdForDie1"}
 FLAGS = VPIPE | {"--displayUR", "--disableVm", "--enableSplitSizeReadOptimize"}
 CSV_FIELDS = ["family", "name", "timeout_seconds", "arguments"]
+DATASETS = ("smoke", "full", "vpipe")
+VPIPE_DIAGNOSTIC_CASE = ("m890p-functional", "test_op_sailbandwidth_vpipeid")
+VPIPE_DIAGNOSTIC_TIMEOUT = 1200
 
 
 def unique_object(pairs):
@@ -151,7 +154,7 @@ def generate(source, output, dataset):
     revision = catalog.get("source_revision")
     if catalog.get("format_version") != 1 or not isinstance(revision, str) or not REVISION.fullmatch(revision):
         raise ValueError("Unsupported family schema or source revision")
-    if dataset not in {"smoke", "full"}:
+    if dataset not in DATASETS:
         raise ValueError("Unknown dataset")
     staged = {}
     families = set()
@@ -167,6 +170,12 @@ def generate(source, output, dataset):
                      for name, args in sorted(family["cases"].items()))
     if families != set(FAMILIES):
         raise ValueError("Incomplete family coverage")
+    if dataset == "vpipe":
+        [(resources, case)] = [(resources, case) for resources, cases in staged.items() for case in cases
+                               if (case.family, case.name) == VPIPE_DIAGNOSTIC_CASE]
+        if case.arguments != ["--enableVpipeIdReadOptimize"]:
+            raise ValueError("The Vpipe diagnostic requires the original default-test command")
+        staged = {resources: [replace(case, timeout=VPIPE_DIAGNOSTIC_TIMEOUT)]}
 
     output.mkdir(parents=True, exist_ok=False)
     manifest = {"format_version": 1, "dataset": dataset, "source_revision": revision, "groups": []}
@@ -193,7 +202,7 @@ def load_manifest(directory):
     manifest = read_json(directory / "groups.json")
     revision = manifest.get("source_revision")
     ids = [group.get("id") for group in manifest.get("groups", [])]
-    if (manifest.get("format_version") != 1 or manifest.get("dataset") not in ("smoke", "full") or
+    if (manifest.get("format_version") != 1 or manifest.get("dataset") not in DATASETS or
             not isinstance(revision, str) or not REVISION.fullmatch(revision) or
             not ids or any(not isinstance(key, str) or not NAME.fullmatch(key) for key in ids) or
             len(set(ids)) != len(ids)):
@@ -235,7 +244,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--families", type=Path, default=ROOT / "families.json")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--dataset", choices=("smoke", "full"), default="smoke")
+    parser.add_argument("--dataset", choices=DATASETS, default="smoke")
     args = parser.parse_args()
     result = generate(args.families, args.output, args.dataset)
     print(json.dumps({"include": result["groups"]}))

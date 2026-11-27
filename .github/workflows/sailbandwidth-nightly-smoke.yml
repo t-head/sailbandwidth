@@ -13,7 +13,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: sailbandwidth-nightly-smoke-${{ github.ref }}
+  group: >-
+    sailbandwidth-nightly-smoke-${{ github.ref }}${{ startsWith(github.event.head_commit.message,
+      'test: diagnose the SailBandwidth Vpipe suite timeout') && '-vpipe' || '' }}
   cancel-in-progress: false
 
 env:
@@ -21,9 +23,10 @@ env:
   SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
   # Diagnostic mode (1) selects only the two-worker MPI group.
   SMOKE_MPI_DIAGNOSTIC: '0'
-  # An explicit experiment-only commit title opts in to the full run.
+  # Explicit experiment-only commit titles opt in to full or a one-case Vpipe diagnostic.
   SMOKE_DATASET: >-
-    ${{ startsWith(github.event.head_commit.message, 'test: validate full SailBandwidth nightly on hardware')
+    ${{ startsWith(github.event.head_commit.message, 'test: diagnose the SailBandwidth Vpipe suite timeout')
+        && 'vpipe' || startsWith(github.event.head_commit.message, 'test: validate full SailBandwidth nightly on hardware')
         && 'full' || 'smoke' }}
   XLSXWRITER_WHEEL: xlsxwriter-3.2.9-py3-none-any.whl
   XLSXWRITER_SHA256: 9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3
