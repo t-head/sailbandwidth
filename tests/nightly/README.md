@@ -37,6 +37,26 @@ No pip, virtual environment, or package registry access is needed on the report
 runner. No benchmark execution dependency is added. The unit tests exercise real local subprocesses with fixture binaries;
 they do not validate the Sail SDK, hardware or MPI transport.
 
+## Full validation budget
+
+The experiment helpers accept `matrix SELECTION --dataset full` for a generated
+full selection. The default remains `smoke`; a full selection is rejected
+unless explicitly requested, and full runs cannot use the smoke MPI diagnostic
+mode. The full selection uses the same three allocations and one shared build.
+
+| Allocation | Cluster timeout | Controller job timeout |
+| --- | ---: | ---: |
+| M890P CX8, 1 node × 8 PPUs | 300 min | 325 min |
+| M890P CX8, same-rack 2 nodes × 8 PPUs | 105 min | 130 min |
+| 810E EIC, 1 node × 16 PPUs | 255 min | 280 min |
+
+The cluster timeout covers scheduling, setup and benchmark execution. The full
+budget sums effective per-Case timeouts, adds 10 seconds per Case for termination
+and 45 minutes for queueing and setup, then rounds up to a 15-minute boundary.
+The controller job allows 25 extra minutes. Smoke keeps its 90- and 115-minute
+budgets. None of these limits changes the per-Case execution timeout or the
+production nightly schedule.
+
 ## Workflow integration contract
 
 Keep the existing check-in and release publication jobs separate. Initially

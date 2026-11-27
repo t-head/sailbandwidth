@@ -255,8 +255,7 @@ os.execv(args[idx], args[idx:])
                                   "eth0" if mpi else None)
             counts = report.report(root / "selection", root / "results", expected, root / "csv")
             self.assertEqual(counts["platforms"], expected_counts)
-            if dataset == "smoke":
-                self.assertEqual(smoke_ci.public_summary(counts)["platforms"], expected_counts)
+            self.assertEqual(smoke_ci.public_summary(counts, dataset=dataset)["platforms"], expected_counts)
             # Exercise optional Excel output when the reporting dependency is available.
             try:
                 import xlsxwriter  # noqa: F401

@@ -96,7 +96,8 @@ case ${1:-} in
         root=$(nas_run)
         group=${SMOKE_GROUP:?}
         rank=${NODE_RANK:-${RANK:-0}}
-        python3 -S -B "$scripts/smoke_ci.py" record-nas-probe "$root" --group="$group" --rank="$rank"
+        python3 -S -B "$scripts/smoke_ci.py" record-nas-probe "$root" \
+            --dataset="${2:-smoke}" --group="$group" --rank="$rank"
         # Keep dependency/worker diagnostics off public build and result artifacts.
         (
             sdk_env
@@ -139,5 +140,5 @@ case ${1:-} in
             --cache "$root/cache/${SMOKE_BUILD_SHA:?}" --identity "$root/build.json" \
             --output "$root/results/$SMOKE_GROUP" --work-root "$root/scratch" "${args[@]}"
         ;;
-    *) fail 'Usage: smoke_ci.sh build OUTPUT | nas-run | setup | run | diagnose-mpi' ;;
+    *) fail 'Usage: smoke_ci.sh build OUTPUT | nas-run | setup [smoke|full] | run | diagnose-mpi' ;;
 esac

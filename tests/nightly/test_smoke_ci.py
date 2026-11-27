@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Offline checks for the one-off real-hardware smoke integration."""
+"""Offline checks for the branch-only hardware experiment integration."""
 
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,6 +22,8 @@ class SmokeCI(unittest.TestCase):
             rows = smoke_ci.smoke_matrix(output)["include"]
             self.assertEqual(len(rows), 3)
             self.assertEqual(sum(row["case_count"] for row in rows), 11)
+            self.assertTrue(all((row["cluster_timeout_minutes"], row["job_timeout_minutes"]) == (90, 115)
+                                for row in rows))
             manifest = cases.load_manifest(output)
             mpi_group = next(group for group in manifest["groups"] if group["nodes"] == 2)
             mpi_group["rack_policy"] = "spread"
@@ -31,6 +34,28 @@ class SmokeCI(unittest.TestCase):
             cases.write_json(output / "groups.json", manifest)
             with self.assertRaisesRegex(ValueError, "full dataset"):
                 smoke_ci.smoke_matrix(output)
+
+    def test_full_requires_exact_coverage_and_budgets_without_splitting_allocations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "selection"
+            cases.generate(cases.ROOT / "families.json", output, "full")
+            with self.assertRaisesRegex(ValueError, "full dataset"):
+                smoke_ci.smoke_matrix(output)
+            rows = smoke_ci.selection_matrix(output, "full")["include"]
+            self.assertEqual(len(rows), 3)
+            self.assertEqual({(row["platform"], row["nodes"]):
+                              (row["case_count"], row["cluster_timeout_minutes"], row["job_timeout_minutes"])
+                              for row in rows}, {("m890p-cx8", 1): (48, 300, 325), ("m890p-cx8", 2): (10, 105, 130),
+                                                 ("810e-eic", 1): (37, 255, 280)})
+            result = subprocess.run([sys.executable, "-S", "-B", str(cases.ROOT / "smoke_ci.py"), "matrix",
+                                     str(output), "--dataset", "full", "--mpi-only"], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("only available for smoke diagnostics", result.stderr)
+            manifest = cases.load_manifest(output)
+            manifest["groups"].pop()
+            cases.write_json(output / "groups.json", manifest)
+            with self.assertRaisesRegex(ValueError, "Wrong full coverage"):
+                smoke_ci.selection_matrix(output, "full")
 
     def test_download_must_match_build_commit_image_and_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,6 +90,18 @@ class SmokeCI(unittest.TestCase):
         summary["platforms"]["m890p-cx8"] = {"PASSED": 5}
         with self.assertRaisesRegex(ValueError, "status totals"):
             smoke_ci.public_summary(summary)
+
+    def test_full_public_summary_counts_not_run_but_does_not_publish_details(self):
+        summary = {"dataset": "full", "platforms": {"m890p-cx8": {"PASSED": 48, "TIMED_OUT": 1, "NOT_RUN": 9},
+                                                    "810e-eic": {"PASSED": 36, "MISSING": 1}},
+                   "unexpected_results": ["diagnostic path"], "source_revision": "source metadata"}
+        with self.assertRaisesRegex(ValueError, "smoke platform totals"):
+            smoke_ci.public_summary(summary)
+        self.assertEqual(smoke_ci.public_summary(summary, dataset="full"),
+                         {"dataset": "full", "platforms": summary["platforms"], "unexpected_result_count": 1})
+        summary["platforms"]["m890p-cx8"]["NOT_RUN"] = 8
+        with self.assertRaisesRegex(ValueError, "full status totals"):
+            smoke_ci.public_summary(summary, dataset="full")
 
 
 class SmokeNAS(unittest.TestCase):
@@ -128,3 +165,17 @@ class SmokeNAS(unittest.TestCase):
             proof.symlink_to(root / smoke_ci.NAS_CHALLENGE)
             with self.assertRaisesRegex(ValueError, "Invalid NAS probe"):
                 smoke_ci.verify_nas_probes(root)
+
+    def test_full_probes_still_require_one_response_per_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / smoke_ci.NAS_PROBES).mkdir()
+            cases.generate(cases.ROOT / "families.json", root / "selection", "full")
+            smoke_ci.write_nas_challenge(root)
+            with self.assertRaisesRegex(ValueError, "full dataset"):
+                smoke_ci.nas_probe_slots(root)
+            slots = smoke_ci.nas_probe_slots(root, dataset="full")
+            self.assertEqual(len(slots), 4)
+            for group, rank in slots:
+                smoke_ci.record_nas_probe(root, group, rank, dataset="full")
+            smoke_ci.verify_nas_probes(root, dataset="full")

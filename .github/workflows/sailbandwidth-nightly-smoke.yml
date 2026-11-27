@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 T-Head (Shanghai) Semiconductor Co., Ltd. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: SailBandwidth nightly hardware smoke (experiment)
+name: SailBandwidth nightly hardware validation (experiment)
 
 on:
   push:
@@ -21,6 +21,10 @@ env:
   SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
   # Diagnostic mode (1) selects only the two-worker MPI group.
   SMOKE_MPI_DIAGNOSTIC: '0'
+  # An explicit experiment-only commit title opts in to the full run.
+  SMOKE_DATASET: >-
+    ${{ startsWith(github.event.head_commit.message, 'test: validate full SailBandwidth nightly on hardware')
+        && 'full' || 'smoke' }}
   XLSXWRITER_WHEEL: xlsxwriter-3.2.9-py3-none-any.whl
   XLSXWRITER_SHA256: 9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3
   SMOKE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -98,7 +102,7 @@ jobs:
           retention-days: 90
 
   stage:
-    name: Stage build and generate only the smoke groups
+    name: Stage one build and generate the selected groups
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:
@@ -111,6 +115,7 @@ jobs:
     outputs:
       matrix: ${{ steps.stage.outputs.matrix }}
       mpi_diagnostic: ${{ steps.stage.outputs.mpi_diagnostic }}
+      dataset: ${{ steps.stage.outputs.dataset }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -145,21 +150,25 @@ jobs:
           python3 -S -B tests/nightly/build_cache.py publish \
             --archive "$bundle/build.tar.gz" --identity "$root/build.json" \
             --cache "$root/cache/$SMOKE_BUILD_SHA"
-          python3 -S -B tests/nightly/cases.py --dataset smoke --output "$root/selection" >/dev/null
+          python3 -S -B tests/nightly/cases.py --dataset "$SMOKE_DATASET" --output "$root/selection" >/dev/null
           set --
           if [ "$SMOKE_MPI_DIAGNOSTIC" = 1 ]; then
             set -- --mpi-only
           fi
-          printf 'mpi_diagnostic=%s\n' "$SMOKE_MPI_DIAGNOSTIC" >> "$GITHUB_OUTPUT"
-          python3 -S -B tests/nightly/smoke_ci.py matrix "$root/selection" "$@" >> "$GITHUB_OUTPUT"
+          matrix=$(python3 -S -B tests/nightly/smoke_ci.py matrix "$root/selection" --dataset "$SMOKE_DATASET" "$@")
+          {
+            printf 'mpi_diagnostic=%s\n' "$SMOKE_MPI_DIAGNOSTIC"
+            printf 'dataset=%s\n' "$SMOKE_DATASET"
+            printf '%s\n' "$matrix"
+          } >> "$GITHUB_OUTPUT"
 
   execute:
-    name: ${{ needs.stage.outputs.mpi_diagnostic == '1' && 'MPI diagnostics' || 'Smoke' }} (${{ matrix.id }})
+    name: ${{ needs.stage.outputs.mpi_diagnostic == '1' && 'MPI diagnostics' || needs.stage.outputs.dataset }} (${{ matrix.id }})
     needs: [build, stage]
     runs-on: k8s-runner-group-cpu-thead
     container:
       image: ghcr.io/actions/actions-runner:latest
-    timeout-minutes: 115
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.stage.outputs.matrix) }}
@@ -182,20 +191,21 @@ jobs:
           rack_policy: ${{ matrix.rack_policy }}
           launch_mode: ${{ matrix.nodes == 2 && 'master' || 'each-node' }}
           namespace: ppu-sched
-          timeout_minutes: 90
+          timeout_minutes: ${{ matrix.cluster_timeout_minutes }}
           host_volumes: /dev/infiniband:/dev/infiniband
           container_options: |
             privileged: true
             host_network: true
             dns_policy: ClusterFirstWithHostNet
           setup_command: |
-            bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" setup
+            bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" setup \
+              '${{ needs.stage.outputs.dataset }}'
           command: |
             bash "${SOURCE_DIR:-/workspace/source}/tests/nightly/smoke_ci.sh" \
               '${{ needs.stage.outputs.mpi_diagnostic == '1' && 'diagnose-mpi' || 'run' }}'
 
   report:
-    name: Reconcile smoke and write per-platform Excel reports
+    name: Reconcile selected cases and write per-platform Excel reports
     needs: [build, stage, execute]
     if: ${{ !cancelled() && needs.stage.result == 'success' && needs.stage.outputs.mpi_diagnostic == '0' }}
     runs-on: k8s-runner-group-cpu-thead
@@ -214,6 +224,7 @@ jobs:
         name: Retain detailed reports on NAS and publish only status totals
         env:
           EXECUTION_RESULT: ${{ needs.execute.result }}
+          REPORT_DATASET: ${{ needs.stage.outputs.dataset }}
         run: |
           set -eu
           root=$(bash tests/nightly/smoke_ci.sh nas-run)
@@ -225,17 +236,17 @@ jobs:
           install -m 600 "$root/$XLSXWRITER_WHEEL" "$wheel"
           printf '%s  %s\n' "$XLSXWRITER_SHA256" "$wheel" | sha256sum --check --strict
           nas_rc=0
-          python3 -S -B tests/nightly/smoke_ci.py verify-nas-probes "$root" \
+          python3 -S -B tests/nightly/smoke_ci.py verify-nas-probes "$root" --dataset "$REPORT_DATASET" \
             > "$root/logs/nas-probes.log" 2>&1 || nas_rc=$?
           if [ "$nas_rc" != 0 ]; then
-            echo '::error::NAS read/write probes did not complete for every smoke worker; see the retained NAS diagnostics.'
+            echo '::error::NAS read/write probes did not complete for every selected worker; see the retained NAS diagnostics.'
           fi
           rc=0
           PYTHONPATH="$wheel" python3 -S -B tests/nightly/report.py \
             --selection "$root/selection" --results "$root/results" --identity "$root/build.json" \
             --output "$root/reports" --excel > "$root/logs/reconciliation.log" 2>&1 || rc=$?
           if [ -f "$root/reports/summary.json" ]; then
-            python3 -S -B tests/nightly/smoke_ci.py public-summary "$root/reports/summary.json" \
+            python3 -S -B tests/nightly/smoke_ci.py public-summary "$root/reports/summary.json" --dataset "$REPORT_DATASET" \
               > "$RUNNER_TEMP/sailbandwidth-smoke-summary-$SMOKE_KEY.json"
             cat "$RUNNER_TEMP/sailbandwidth-smoke-summary-$SMOKE_KEY.json"
           fi
