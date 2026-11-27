@@ -18,8 +18,9 @@ name: build_artifactory
 #   github_generic/nightly/<owner>/<repo>/comm.<ref>-<stamp>/<pkg_name>.zip
 # Every row of one run shares that version directory, so a consumer that knows the ref and the
 # label can build the URL directly; the rows differ by file name and by the os / runtime
-# properties set on each item, and the run id / attempt travel as item properties too. Only that
-# job needs secrets (RELEASE_USERNAME / RELEASE_TOKEN); the build jobs themselves need none.
+# properties set on each item, and the run id / attempt travel as item properties too. The upload
+# job and the image pull of every build row authenticate with the release account
+# (RELEASE_USERNAME / RELEASE_TOKEN); no other step needs a secret.
 #
 # Each item also carries a note in the free-form `extra_info` property, which is the field an
 # artifact page shows next to a package. The note is one JSON object with a single key, so the whole
@@ -38,7 +39,8 @@ name: build_artifactory
 # longer ship the PPU SDK, so each matrix row also carries the SDK run package for its OS and
 # HGGCRT runtime: the tar build script downloads sdk_url into sdk_name and installs it under
 # ${source_home}, which lets one base image serve both hggcrt rows. Every enabled row must carry
-# a container image, otherwise the prepare job fails fast.
+# a container image, otherwise the prepare job fails fast. The registry advertises an anonymous
+# pull as 401, so each row logs in with the release account before it pulls its image.
 #
 # Everything runs on the internal x86-ubuntu2404-8-32 runner pool (8 vCPU / 32 GB): the matching
 # distribution image is started locally with docker and the workspace is bind-mounted at
@@ -410,6 +412,17 @@ jobs:
             sudo -n rm -rf "${dir}" 2>/dev/null || echo "::warning::could not remove ${dir} (no passwordless sudo)"
           done
           df -h /
+
+      - name: Log in to the distribution registry
+        # The base images live in download.t-head.cn, which answers anonymous pulls with a rate
+        # limit and, when that is hit, a 401 that the retry loop below cannot recover from. The
+        # credentials are the release account the transfer-back step already uses, and the login
+        # only grants read access to the image this row pulls.
+        uses: docker/login-action@v3
+        with:
+          registry: download.t-head.cn
+          username: ${{ secrets.RELEASE_USERNAME }}
+          password: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Pull the distribution image
         env:
