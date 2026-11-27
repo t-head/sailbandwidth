@@ -78,7 +78,7 @@ jobs:
       matrix:
         config:
           - name: ubuntu24_hggcrt13
-            image: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+            image: download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt3-ubuntu24.04-py312-20261123
             runner: ZW-M890P
     steps:
       - uses: actions/checkout@v4

@@ -18,8 +18,9 @@ name: build_artifactory
 #   github_generic/nightly/<owner>/<repo>/comm.<ref>-<stamp>/<pkg_name>.zip
 # Every row of one run shares that version directory, so a consumer that knows the ref and the
 # label can build the URL directly; the rows differ by file name and by the os / runtime
-# properties set on each item, and the run id / attempt travel as item properties too. Only that
-# job needs secrets (RELEASE_USERNAME / RELEASE_TOKEN); the build jobs themselves need none.
+# properties set on each item, and the run id / attempt travel as item properties too. The upload
+# job and the image pull of every build row authenticate with the release account
+# (RELEASE_USERNAME / RELEASE_TOKEN); no other step needs a secret.
 #
 # Each item also carries a note in the free-form `extra_info` property, which is the field an
 # artifact page shows next to a package. The note is one JSON object with a single key, so the whole
@@ -38,7 +39,8 @@ name: build_artifactory
 # longer ship the PPU SDK, so each matrix row also carries the SDK run package for its OS and
 # HGGCRT runtime: the tar build script downloads sdk_url into sdk_name and installs it under
 # ${source_home}, which lets one base image serve both hggcrt rows. Every enabled row must carry
-# a container image, otherwise the prepare job fails fast.
+# a container image, otherwise the prepare job fails fast. The registry advertises an anonymous
+# pull as 401, so each row logs in with the release account before it pulls its image.
 #
 # Everything runs on the internal x86-ubuntu2404-8-32 runner pool (8 vCPU / 32 GB): the matching
 # distribution image is started locally with docker and the workspace is bind-mounted at
@@ -47,9 +49,12 @@ name: build_artifactory
 #
 # The artifact label is the UTC+8 YYYY-MM-DD-1900 nightly slot of a scheduled run, and a nightly
 # run also builds the default-branch commit as of that 19:00 timestamp: a queued-late run still
-# produces the slot's code and a predictable upload path. Push and manual runs are not that slot
-# and keep their real YYYY-MM-DD-HHmm start time and their triggering commit, so two builds of
-# one day never share a version; artifact_version overrides the label.
+# produces the slot's code and a predictable upload path. Push runs keep their real YYYY-MM-DD-HHmm
+# start time and the commit that triggered them, so two builds of one day never share a version.
+# artifact_version overrides the label, and a label that itself names a UTC+8 instant
+# (YYYY-MM-DD-HHmm) also pins the build to the commit this ref had at that instant, so a nightly
+# slot can be re-run hours later without picking up the commits that landed in between and the code
+# inside the tarballs always matches the label a consumer reads.
 
 on:
   # Nightly artifact build at 19:00 UTC+8 (11:00 UTC; GitHub cron is always UTC). GitHub only
@@ -80,7 +85,7 @@ on:
         type: string
         default: '["12","13"]'
       artifact_version:
-        description: 'Label used for the upload version and the run summary; empty means the UTC+8 "YYYY-MM-DD-1900" slot for a scheduled run and the actual "YYYY-MM-DD-HHmm" start time otherwise'
+        description: 'Label used for the upload version and the run summary; empty means the UTC+8 "YYYY-MM-DD-1900" slot for a scheduled run and the actual "YYYY-MM-DD-HHmm" start time otherwise. A YYYY-MM-DD-HHmm label also pins the built commit to what this ref had at that UTC+8 instant'
         required: false
         type: string
         default: ''
@@ -124,7 +129,8 @@ jobs:
       # summary agree on them.
       ref_slug: ${{ steps.matrix.outputs.ref_slug }}
       upload_stamp: ${{ steps.matrix.outputs.upload_stamp }}
-      # Commit the build checks out; empty for push and dispatch, which build the triggered commit.
+      # Commit the build checks out; empty for a push or an unlabeled dispatch, which build the
+      # commit that triggered them.
       slot_commit: ${{ steps.matrix.outputs.slot_commit }}
       buildable: ${{ steps.matrix.outputs.buildable }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
@@ -239,22 +245,33 @@ jobs:
               return now.strftime("%Y-%m-%d-%H%M")
 
 
-          def resolve_slot_commit(slot_start):
-              # A delayed run must still build the code as of the slot, not whatever was pushed
-              # while it queued, so the default-branch commit at the slot is resolved explicitly.
-              for revision in ("origin/main", "HEAD"):
+          def resolve_commit_at(when, revisions):
+              # A delayed or back-filled run must still build the code as of the label, not whatever
+              # was pushed meanwhile, so the commit of that instant is resolved explicitly.
+              for revision in revisions:
                   try:
                       found = subprocess.run(
                           ["git", "-C", str(SOURCE_DIR), "rev-list", "-1",
-                           f"--before={slot_start.isoformat()}", revision],
+                           f"--before={when.isoformat()}", revision],
                           check=True, capture_output=True, text=True).stdout.strip()
                   except (subprocess.CalledProcessError, FileNotFoundError):
                       continue
                   if found:
                       return found
-              print("::warning::could not resolve the default-branch commit of the slot; "
-                    "building the commit that triggered the run", flush=True)
               return ""
+
+
+          def label_instant(label):
+              # A caller can hand back any label of the shape a run writes for itself, so a label
+              # that names a UTC+8 instant is read as the code a consumer of it expects to get.
+              if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-\d{4}", label):
+                  return None
+              try:
+                  parsed = datetime.strptime(label, "%Y-%m-%d-%H%M")
+              except ValueError:
+                  fail(f"artifact_version {label} has the shape of a UTC+8 instant but is not a "
+                       "real time")
+              return parsed.replace(tzinfo=timezone(timedelta(hours=8)))
 
 
           def sdk_identity(sdk_name):
@@ -271,9 +288,25 @@ jobs:
           selected_hggcrt = parse_filter(os.environ["HGGCRT_VERSIONS"], "hggcrt_versions", HGGCRT_LABELS)
           event_name = os.environ.get("GITHUB_EVENT_NAME", "")
           now = datetime.now(timezone(timedelta(hours=8)))
-          version = resolve_version(os.environ.get("ARTIFACT_VERSION", "").strip(), event_name)
-          # Only a scheduled run is pinned; a push or a dispatch builds exactly what it triggered on.
-          slot_commit = resolve_slot_commit(resolve_slot(now)) if event_name == "schedule" else ""
+          raw_label = os.environ.get("ARTIFACT_VERSION", "").strip()
+          version = resolve_version(raw_label, event_name)
+          # A run is pinned when it names an instant: a nightly names its slot, and a manual run
+          # names one through the label the caller typed. Everything else builds what it was
+          # triggered on, so an unlabeled dispatch cannot be pinned by its own start-time label.
+          if event_name == "schedule":
+              slot_commit = resolve_commit_at(resolve_slot(now), ("origin/main", "HEAD"))
+              if not slot_commit:
+                  print("::warning::could not resolve the default-branch commit of the slot; "
+                        "building the commit that triggered the run", flush=True)
+          elif event_name == "workflow_dispatch" and raw_label and label_instant(raw_label):
+              # Only the dispatched ref is walked: a release branch has to build that branch's code,
+              # and falling back to another branch would publish the wrong tarballs under the label.
+              slot_commit = resolve_commit_at(label_instant(raw_label), ("HEAD",))
+              if not slot_commit:
+                  fail(f"artifact_version {raw_label} names a UTC+8 instant before this ref has any "
+                       "commit; drop the label to build the triggering commit")
+          else:
+              slot_commit = ""
           # The upload directory is comm.<ref>-<stamp> and is shared by every row of the run: the
           # label loses its dashes (2026-11-17-1900 -> 202611171900) and the ref keeps only
           # characters a path accepts, so callers can build the URL and no two runs collide.
@@ -380,8 +413,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
         with:
-          # A nightly run builds the code as of 19:00 UTC+8 even when the run is queued late;
-          # push and dispatch runs leave the ref empty and get the triggered commit.
+          # A nightly run builds the code as of 19:00 UTC+8 even when queued late, and a dispatch
+          # labelled with a UTC+8 instant builds that instant's commit; a push or an unlabeled
+          # dispatch leaves the ref empty and gets the triggered commit.
           ref: ${{ needs.prepare.outputs.slot_commit || github.sha }}
           fetch-depth: 0
           path: sailbandwidth
@@ -410,6 +444,17 @@ jobs:
             sudo -n rm -rf "${dir}" 2>/dev/null || echo "::warning::could not remove ${dir} (no passwordless sudo)"
           done
           df -h /
+
+      - name: Log in to the distribution registry
+        # The base images live in download.t-head.cn, which answers anonymous pulls with a rate
+        # limit and, when that is hit, a 401 that the retry loop below cannot recover from. The
+        # credentials are the release account the transfer-back step already uses, and the login
+        # only grants read access to the image this row pulls.
+        uses: docker/login-action@v3
+        with:
+          registry: download.t-head.cn
+          username: ${{ secrets.RELEASE_USERNAME }}
+          password: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Pull the distribution image
         env:
