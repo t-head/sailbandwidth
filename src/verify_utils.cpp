@@ -53,6 +53,7 @@ struct VerifyScan {
     unsigned long long firstOffset = 0;
     unsigned int flippedEver = 0;        // bits wrong in at least one bad value
     unsigned int flippedAlways = ~0u;    // bits wrong in every bad value
+    unsigned long long bitErrorCounts[32] = {};
     unsigned long long srcOk = 0;        // source content verdict counts
     unsigned long long srcBad = 0;
     unsigned long long xferOk = 0;       // transfer verdict counts
@@ -179,7 +180,7 @@ void readEndpointChunk(const MemcpyBuffer* buf, HGdeviceptr base, unsigned long 
 
 // Identity of the failing transfer (console report and dump header).
 void writeIdentity(std::ostream& os, const char* prefix, const MemcpyBuffer* srcBuf,
-                   const MemcpyBuffer* dstBuf) {
+                   const MemcpyBuffer* dstBuf, const MemcpyBuffer* verifiedBuf) {
     field(os, prefix, "testcase") << currentTestcaseName << "\n";
     field(os, prefix, "transport") << srcBuf->getBufferString() << " -> "
                                    << dstBuf->getBufferString() << "\n";
@@ -187,9 +188,22 @@ void writeIdentity(std::ostream& os, const char* prefix, const MemcpyBuffer* src
                              << "  BDF=" << endpointBdf(srcBuf) << "\n";
     field(os, prefix, "dst") << "host=" << endpointHost(dstBuf) << "  rank=" << verifyLinkId(dstBuf)
                              << "  BDF=" << endpointBdf(dstBuf) << "\n";
+    auto& verified = field(os, prefix, "verified buffer");
+    if (srcBuf != dstBuf) {
+        verified << (verifiedBuf == srcBuf ? "src: " : "dst: ");
+    }
+    verified << verifiedBuf->getBufferString() << "\n";
 #ifdef MULTINODE
     field(os, prefix, "reported by") << "host=" << env->getHostname() << "  rank=" << worldRank << "\n";
 #endif
+}
+
+void writeFirstMismatch(std::ostream& os, const char* prefix, const VerifyMismatch& mismatch) {
+    field(os, prefix, "first bad offset") << mismatch.offset << " (word) / "
+                                          << mismatch.offset * sizeof(unsigned int) << " (byte)\n";
+    field(os, prefix, "first expected") << hex8(mismatch.expected) << "\n";
+    field(os, prefix, "first actual") << hex8(mismatch.actual) << "\n";
+    field(os, prefix, "first xor") << hex8(mismatch.expected ^ mismatch.actual) << "\n";
 }
 
 // Mismatch statistics (console report and dump header).
@@ -204,6 +218,13 @@ void writeStats(std::ostream& os, const char* prefix, const VerifyScan& scan,
         << "ever=" << hex8(scan.flippedEver) << " always=" << hex8(scan.flippedAlways)
         << (scan.flippedEver == scan.flippedAlways ? "  (the same bit(s) in every bad value)" : "")
         << "\n";
+    auto& bitCounts = field(os, prefix, "bit error counts");
+    for (unsigned int bit = 0; bit < 32; bit++) {
+        if (scan.bitErrorCounts[bit] != 0) {
+            bitCounts << " b" << bit << "=" << scan.bitErrorCounts[bit];
+        }
+    }
+    bitCounts << "\n";
     // The source/transfer split is only meaningful when this process owns both endpoints; otherwise
     // the report stops at the received-vs-expected comparison above.
     if (scan.attributable) {
@@ -281,8 +302,12 @@ VerifyScan scanVerifiedBuffer(const MemcpyBuffer* srcBuf, const MemcpyBuffer* ve
                 scan.firstOffset = offset;
             }
             scan.total++;
-            scan.flippedEver |= expected ^ m.actual;
-            scan.flippedAlways &= expected ^ m.actual;
+            unsigned int xorMask = expected ^ m.actual;
+            scan.flippedEver |= xorMask;
+            scan.flippedAlways &= xorMask;
+            for (unsigned int bit = 0; bit < 32; bit++) {
+                scan.bitErrorCounts[bit] += (xorMask >> bit) & 1u;
+            }
             if (scan.attributable) {
                 if (m.srcValue == expected) scan.srcOk++; else scan.srcBad++;
                 if (scan.haveInitPattern && m.actual == m.initValue) {
@@ -387,11 +412,12 @@ std::string writeDumpFile(const char* dumpSpec, const MemcpyBuffer* srcBuf,
     }
 
     f << "# sailbandwidth data-verification mismatch dump\n";
-    writeIdentity(f, "# ", srcBuf, dstBuf);
+    writeIdentity(f, "# ", srcBuf, dstBuf, verifiedBuf);
     field(f, "# ", "buffer") << (void*)buffer << "\n";
     if (patternName != nullptr) {
         field(f, "# ", "pattern") << patternName << "\n";
     }
+    writeFirstMismatch(f, "# ", scan.listed.front());
     writeStats(f, "# ", scan, numElements);
     field(f, "# ", "shown below") << scan.listed.size() << " of " << scan.total << " bad values";
     if (scan.total > scan.listed.size()) {
@@ -451,7 +477,7 @@ void reportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
 
     std::stringstream r;
     r << "Data verification FAILED\n";
-    writeIdentity(r, "  ", srcBuf, dstBuf);
+    writeIdentity(r, "  ", srcBuf, dstBuf, verifiedBuf);
     if (patternName != nullptr) {
         field(r, "  ", "pattern") << patternName << "\n";
     }
@@ -464,12 +490,7 @@ void reportFailure(const MemcpyBuffer* srcBuf, const MemcpyBuffer* dstBuf,
 
     HGdeviceptr firstAddr = (HGdeviceptr)((char*)buffer + scan.firstOffset * sizeof(unsigned int));
     field(r, "  ", "first bad address") << (void*)firstAddr << "\n";
-    field(r, "  ", "first bad offset") << scan.firstOffset << " (word) / "
-                                       << scan.firstOffset * sizeof(unsigned int) << " (byte)\n";
-    if (patternName != nullptr) {
-        field(r, "  ", "first expected") << hex8(scan.listed.front().expected) << "\n";
-        field(r, "  ", "first actual") << hex8(scan.listed.front().actual) << "\n";
-    }
+    writeFirstMismatch(r, "  ", scan.listed.front());
     writeStats(r, "  ", scan, numElements);
     if (faultMatchesLink(verifyLinkId(srcBuf), verifyLinkId(dstBuf))) {
         field(r, "  ", "note") << "values corrupted by SAILBW_VERIFY (simulated fault)\n";

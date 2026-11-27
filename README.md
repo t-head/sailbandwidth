@@ -190,11 +190,11 @@ The following are the most commonly used options controlling PPU-specific copy b
 ### Data verification and fault injection
 
 By default, the final buffer contents are verified after each sample's copy iterations complete;
-use `--skipVerification` to disable this. On a
-verification failure the run prints an aligned report that identifies the affected transfer —
-including each endpoint's host, rank and PCI BDF and the first bad offset — and, when both endpoints
-are locally readable, distinguishes whether the observed mismatch was already present in the source
-or appeared during the transfer. It also writes a dump of the mismatching values and aborts.
+use `--skipVerification` to disable this. On a verification failure, the run reports both endpoints
+(host, rank and PCI BDF) and identifies the buffer that failed verification. If a mismatch is still
+present on readback, the report and dump show the first bad word's offset, expected value, actual
+value and XOR mask. A mismatch that disappears on readback is reported as potentially transient,
+without those values. The run still aborts on failure.
 
 The check fills the source buffer with the pattern the destination should end up with, and pre-fills
 the destination with a different marker. Afterwards a word still holding the marker is consistent
@@ -224,6 +224,13 @@ together with `bad values`: a permanently stuck data line would corrupt about ha
 handful out of millions means marginal rather than stuck. With one or two bad values `ever == always`
 carries no information. These are diagnostic hints, not proof; the inference depends on the data
 pattern and the fault model.
+
+`bit error counts` reports how many mismatching 32-bit words have each bit set in `expected ^ actual`,
+with bit 0 the least significant bit. Bits with zero counts are omitted. Counts cover the entire
+failed buffer readback, independent of `SAILBW_DUMP_SIZE`; they are not failure counts across timed
+iterations or samples, and do not identify a physical data lane or a faulty component. For
+`device_local_read_sm`, the checked words are generated match masks, not the source payload, so
+these counts describe mismatching mask words rather than individual failed reads.
 
 The following environment variables assist link fault diagnosis:
 
