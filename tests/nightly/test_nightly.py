@@ -70,14 +70,24 @@ class SelectionTests(unittest.TestCase):
                         self.assertNotIn((case.family, case.name), identities)
                         identities.add((case.family, case.name))
                 self.assertEqual(len(identities), sum(expected))
-                expected_budgets = [("810e-performance", "test_op_device_to_device_latency_sm_i_1", 1200)]
+                expected_budgets = {("810e-performance", "test_op_device_to_device_latency_sm_i_1", 1200)}
                 if dataset == "full":
-                    expected_budgets.append((*cases.VPIPE_CASE, 1200))
-                self.assertEqual(longer_budgets, expected_budgets)
+                    expected_budgets.add((*cases.VPIPE_CASE, 1200))
+                    expected_budgets.update(("810e-performance", name, 1200) for name in (
+                        "test_op_all_to_host_bidirectional_memcpy_ce_i_1",
+                        "test_op_all_to_host_memcpy_ce_i_1",
+                        "test_op_all_to_host_memcpy_sm_i_1",
+                        "test_op_host_to_all_bidirectional_memcpy_ce_i_1",
+                        "test_op_host_to_all_memcpy_ce_i_1",
+                        "test_op_host_to_all_memcpy_sm_i_1",
+                    ))
+                self.assertCountEqual(longer_budgets, expected_budgets)
 
     def test_eic_execution_budget_does_not_reduce_source_timeout(self):
-        case = cases.make_case("810e-performance", "latency", 1500, ["-t", LATENCY])
-        self.assertIs(cases.execution_budget(case), case)
+        for op in (LATENCY, "all_to_host_memcpy_ce"):
+            with self.subTest(operation=op):
+                case = cases.make_case("810e-performance", f"test_op_{op}_i_1", 1500, ["-t", op, "-i", "1"])
+                self.assertIs(cases.execution_budget(case), case)
 
     def test_vpipe_execution_budget_preserves_larger_source_timeout_and_other_invocations(self):
         args = ["--enableVpipeIdReadOptimize"]

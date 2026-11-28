@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SDK_IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+  SDK_IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt3-ubuntu24.04-py312-20261123
   SMOKE_NAS_SUBDIR: ${{ vars.SAILBANDWIDTH_NAS_SUBDIR }}
   # Diagnostic mode (1) selects only the two-worker MPI group.
   SMOKE_MPI_DIAGNOSTIC: '0'

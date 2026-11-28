@@ -32,6 +32,15 @@ CSV_FIELDS = ["family", "name", "timeout_seconds", "arguments"]
 DATASETS = ("smoke", "full", "vpipe")
 VPIPE_CASE = ("m890p-functional", "test_op_sailbandwidth_vpipeid")
 VPIPE_TIMEOUT_SECONDS = 1200
+EIC_TIMEOUT_SECONDS = 1200
+EIC_SLOW_HOST_COPIES = frozenset({
+    "all_to_host_bidirectional_memcpy_ce",
+    "all_to_host_memcpy_ce",
+    "all_to_host_memcpy_sm",
+    "host_to_all_bidirectional_memcpy_ce",
+    "host_to_all_memcpy_ce",
+    "host_to_all_memcpy_sm",
+})
 
 
 def unique_object(pairs):
@@ -118,11 +127,13 @@ def execution_budget(case):
     # The default-test invocation took over 12 minutes on eight M890P devices.
     if is_vpipe_default_case(case) and case.timeout < VPIPE_TIMEOUT_SECONDS:
         return replace(case, timeout=VPIPE_TIMEOUT_SECONDS)
-    # The adapted 16-PPU EIC case sweeps up to 240 ordered pairs serially.
-    # Keep the snapshot unchanged and budget the same benchmark arguments.
-    if (case.family == "810e-performance" and
-            validate_arguments(case.arguments) == "device_to_device_latency_sm" and case.timeout < 1200):
-        return replace(case, timeout=1200)
+    if case.family == "810e-performance" and case.timeout < EIC_TIMEOUT_SECONDS:
+        operation = validate_arguments(case.arguments)
+        # The EIC latency sweep covers up to 240 pairs. Only the six full-run
+        # host copies that exhausted 300 seconds receive the same larger budget.
+        if (operation == "device_to_device_latency_sm" or
+                (operation in EIC_SLOW_HOST_COPIES and case.name == f"test_op_{operation}_i_1")):
+            return replace(case, timeout=EIC_TIMEOUT_SECONDS)
     return case
 
 

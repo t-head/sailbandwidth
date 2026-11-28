@@ -15,11 +15,12 @@ Generated execution groups and CSVs are run artifacts, not maintained inputs.
 810E single-node coverage needs a compatibility check on the EIC pool: it is a
 board-level candidate adapted from a different source NIC topology, not validated
 NIC parity. SNIC, other board types, and cross-rack workloads are out of scope.
-The experiment gives only the 16-PPU EIC device-to-device SM latency Case at
-least 1200 seconds. Its serial pointer-chase sweep has up to 240 directed pairs;
-the 8-PPU run's 56 pairs already take over two minutes. The generated execution
-budget is separate from the source snapshot and does not change measured work,
-Case arguments, or the budget of any other benchmark.
+The 16-PPU EIC device-to-device SM latency Case has at least 1200 seconds for
+its serial sweep of up to 240 directed pairs. Six 810E host-to-all or all-to-host
+copy Cases also get at least 1200 seconds after exhausting the 300-second limit
+in the full hardware run: unidirectional CE and SM in both directions, and
+bidirectional CE in both directions. The two bidirectional SM Cases retain their
+300-second limit. The overrides leave the source snapshot and arguments intact.
 
 ## Local validation
 
